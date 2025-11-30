@@ -1,2 +1,3 @@
 # CIAO!
-questo progetto non è ancora pronto, se volete contribuire o rubare il progetto non chiedete.
+Questo progetto non è ancora pronto.<br>
+Se volete contribuire o usarlo, non chiedete: mi basta che mettiate i crediti (grazie alla licenza MIT)
