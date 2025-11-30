@@ -22,10 +22,16 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     saveProfiles: (profiles) => ipcRenderer.invoke('save-profiles', profiles),
     // File System API
     selectFolder: () => ipcRenderer.invoke('select-folder'),
-    installMod: (downloadUrl, modName, gameDir) => ipcRenderer.invoke('install-mod', downloadUrl, modName, gameDir),
+    selectFile: () => ipcRenderer.invoke('select-file'),
+    installMod: (profileId, downloadUrl, modName) => ipcRenderer.invoke('install-mod', { profileId, downloadUrl, modName }),
     checkDirectoryExists: (dirPath) => ipcRenderer.invoke('check-directory-exists', dirPath),
     // Thunderstore API
     fetchCommunities: () => ipcRenderer.invoke('fetch-communities'),
     fetchPackages: (communityIdentifier) => ipcRenderer.invoke('fetch-packages', communityIdentifier),
+    fetchPackageByName: (name) => ipcRenderer.invoke('fetch-package-by-name', name),
+    importProfile: (code) => ipcRenderer.invoke('import-profile', code),
+    importProfileFromFile: (path) => ipcRenderer.invoke('import-profile-from-file', path),
+    openModFolder: (profileId, modName) => ipcRenderer.invoke('open-mod-folder', { profileId, modName }),
+    exportProfile: (profileId) => ipcRenderer.invoke('export-profile', profileId),
 });
 //# sourceMappingURL=preload.js.map

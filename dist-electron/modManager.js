@@ -1,7 +1,7 @@
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
-import AdmZip from 'adm-zip';
+import { exec } from 'child_process';
 export class ModManager {
     static async downloadMod(url, destinationPath) {
         return new Promise((resolve, reject) => {
@@ -34,9 +34,18 @@ export class ModManager {
             });
         });
     }
-    static extractZip(zipPath, extractTo) {
-        const zip = new AdmZip(zipPath);
-        zip.extractAllTo(extractTo, true);
+    static async extractZip(zipPath, extractTo) {
+        return new Promise((resolve, reject) => {
+            // Use system unzip on macOS/Linux
+            exec(`unzip -o "${zipPath}" -d "${extractTo}"`, (error, stdout, stderr) => {
+                if (error) {
+                    console.error(`exec error: ${error}`);
+                    reject(error);
+                    return;
+                }
+                resolve();
+            });
+        });
     }
     static async installMod(downloadUrl, modName, gameDir, tempDir) {
         // Create temp directory if it doesn't exist
@@ -51,7 +60,7 @@ export class ModManager {
         if (!fs.existsSync(modInstallPath)) {
             fs.mkdirSync(modInstallPath, { recursive: true });
         }
-        this.extractZip(zipPath, modInstallPath);
+        await this.extractZip(zipPath, modInstallPath);
         // Clean up
         fs.unlinkSync(zipPath);
     }

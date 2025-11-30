@@ -1,7 +1,9 @@
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
-import AdmZip from 'adm-zip';
+
+
+import { exec } from 'child_process';
 
 export class ModManager {
     static async downloadMod(url: string, destinationPath: string): Promise<string> {
@@ -36,9 +38,18 @@ export class ModManager {
         });
     }
 
-    static extractZip(zipPath: string, extractTo: string): void {
-        const zip = new AdmZip(zipPath);
-        zip.extractAllTo(extractTo, true);
+    static async extractZip(zipPath: string, extractTo: string): Promise<void> {
+        return new Promise((resolve, reject) => {
+            // Use system unzip on macOS/Linux
+            exec(`unzip -o "${zipPath}" -d "${extractTo}"`, (error: any, stdout: any, stderr: any) => {
+                if (error) {
+                    console.error(`exec error: ${error}`);
+                    reject(error);
+                    return;
+                }
+                resolve();
+            });
+        });
     }
 
     static async installMod(
@@ -62,7 +73,7 @@ export class ModManager {
             fs.mkdirSync(modInstallPath, { recursive: true });
         }
 
-        this.extractZip(zipPath, modInstallPath);
+        await this.extractZip(zipPath, modInstallPath);
 
         // Clean up
         fs.unlinkSync(zipPath);

@@ -2,6 +2,7 @@ export interface InstalledMod {
     uuid4: string;
     fullName: string; // e.g. "ebkr-r2modman-3.1.0"
     versionNumber: string;
+    iconUrl?: string;
     enabled: boolean;
 }
 
