@@ -114,7 +114,7 @@ let win;
 const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL'];
 function createWindow() {
     win = new BrowserWindow({
-        icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
+        title: 'r2modmac',
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
@@ -123,9 +123,6 @@ function createWindow() {
         },
         width: 1200,
         height: 800,
-        titleBarStyle: 'hiddenInset', // Mac style
-        vibrancy: 'under-window', // Mac blur effect
-        visualEffectState: 'active',
     });
     // Test active push message to Console
     win.webContents.on('did-finish-load', () => {
