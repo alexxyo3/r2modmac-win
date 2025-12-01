@@ -45,12 +45,6 @@ jobs:
       - name: Build Tauri app (${{ matrix.target.name }})
         run: npm run tauri build -- --target ${{ matrix.target.rust-target }}
 
-      - name: Rename DMG
-        run: |
-          cd src-tauri/target/${{ matrix.target.rust-target }}/release/bundle/dmg
-          for file in *.dmg; do
-            mv "$file" "${file%.dmg}_${{ matrix.target.arch }}.dmg"
-          done
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
