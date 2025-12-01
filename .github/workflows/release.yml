@@ -6,10 +6,22 @@ on:
       - 'v*'
 
 jobs:
-  release:
+  build:
     permissions:
       contents: write
     runs-on: macos-latest
+    strategy:
+      matrix:
+        target:
+          - name: "Apple Silicon"
+            rust-target: "aarch64-apple-darwin"
+            arch: "aarch64"
+          - name: "Intel"
+            rust-target: "x86_64-apple-darwin"
+            arch: "x86_64"
+          - name: "Universal"
+            rust-target: "universal-apple-darwin"
+            arch: "universal"
     
     steps:
       - name: Checkout repository
@@ -23,19 +35,47 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Build Tauri app
-        run: npm run tauri build
+      - name: Build Tauri app (${{ matrix.target.name }})
+        run: npm run tauri build -- --target ${{ matrix.target.rust-target }}
+
+      - name: Rename DMG
+        run: |
+          cd src-tauri/target/${{ matrix.target.rust-target }}/release/bundle/dmg
+          for file in *.dmg; do
+            mv "$file" "${file%.dmg}_${{ matrix.target.arch }}.dmg"
+          done
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ matrix.target.arch }}
+          path: src-tauri/target/${{ matrix.target.rust-target }}/release/bundle/dmg/*.dmg
+          retention-days: 1
+
+  release:
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dmgs
+          pattern: dmg-*
+          merge-multiple: true
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: |
-            src-tauri/target/release/bundle/dmg/*.dmg
-            src-tauri/target/release/bundle/macos/*.app.tar.gz
+          files: dmgs/*.dmg
           draft: false
           prerelease: false
           generate_release_notes: true
