@@ -26,7 +26,7 @@ build
 
 # Editor directories and files
 .vscode/*
-.provvisorio/
+/provvisorio
 !.vscode/extensions.json
 !.vscode/settings.json
 .idea
@@ -44,4 +44,3 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
-/provvisorio
