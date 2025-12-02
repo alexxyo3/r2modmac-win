@@ -1,5 +1,5 @@
 use tauri::{command, AppHandle, Manager};
-use std::fs;
+use std::{fs, sync::Mutex, collections::HashMap};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -101,8 +101,116 @@ async fn fetch_community_images() -> Result<std::collections::HashMap<String, St
 
 // AppState to hold packages in memory
 struct AppState {
-    packages: std::sync::Mutex<std::collections::HashMap<String, Vec<serde_json::Value>>>,
+    // Cache: GameID -> List of Packages
+    packages: Mutex<HashMap<String, Vec<serde_json::Value>>>,
 }
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+struct Settings {
+    steam_path: Option<String>,
+}
+
+impl Settings {
+    fn default() -> Self {
+        // Default Steam path on macOS
+        let home = dirs::home_dir().unwrap_or_default();
+        let steam_path = home.join("Library/Application Support/Steam");
+        Self {
+            steam_path: if steam_path.exists() { Some(steam_path.to_string_lossy().to_string()) } else { None },
+        }
+    }
+}
+
+fn get_settings_path(app: &AppHandle) -> std::path::PathBuf {
+    app.path().app_data_dir().unwrap().join("settings.json")
+}
+
+fn load_settings_impl(app: &AppHandle) -> Settings {
+    let path = get_settings_path(app);
+    if path.exists() {
+        if let Ok(data) = fs::read_to_string(&path) {
+            if let Ok(settings) = serde_json::from_str(&data) {
+                return settings;
+            }
+        }
+    }
+    Settings::default()
+}
+
+#[command]
+async fn get_settings(app: AppHandle) -> Result<Settings, String> {
+    Ok(load_settings_impl(&app))
+}
+
+#[command]
+async fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
+    let path = get_settings_path(&app);
+    let data = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    fs::write(path, data).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[command]
+async fn get_game_path(app: AppHandle, game_identifier: String) -> Result<Option<String>, String> {
+    let settings = load_settings_impl(&app);
+    let steam_path_str = settings.steam_path.ok_or("Steam path not configured")?;
+    let steam_path = std::path::Path::new(&steam_path_str);
+
+    // Map gameIdentifier to Steam AppID
+    // TODO: Move this to a better place or load from ecosystem.json
+    let app_id = match game_identifier.as_str() {
+        "lethal-company" => "1966720",
+        "risk-of-rain-2" => "632360",
+        _ => return Err(format!("Unknown game identifier: {}", game_identifier)),
+    };
+
+    // 1. Check default steamapps location
+    let default_manifest = steam_path.join("steamapps").join(format!("appmanifest_{}.acf", app_id));
+    if default_manifest.exists() {
+        return parse_manifest_for_path(&default_manifest);
+    }
+
+    // 2. Check libraryfolders.vdf
+    let library_folders_path = steam_path.join("steamapps").join("libraryfolders.vdf");
+    if library_folders_path.exists() {
+        let content = fs::read_to_string(&library_folders_path).map_err(|e| e.to_string())?;
+        
+        // Simple regex to find paths in libraryfolders.vdf
+        // "path"		"/Users/username/Library/Application Support/Steam"
+        let re = regex::Regex::new(r#""path"\s+"([^"]+)""#).unwrap();
+        
+        for cap in re.captures_iter(&content) {
+            let lib_path_str = &cap[1];
+            let lib_path = std::path::Path::new(lib_path_str);
+            let manifest_path = lib_path.join("steamapps").join(format!("appmanifest_{}.acf", app_id));
+            
+            if manifest_path.exists() {
+                return parse_manifest_for_path(&manifest_path);
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn parse_manifest_for_path(manifest_path: &std::path::Path) -> Result<Option<String>, String> {
+    let content = fs::read_to_string(manifest_path).map_err(|e| e.to_string())?;
+    
+    // Regex to find installdir
+    // "installdir"		"Lethal Company"
+    let re = regex::Regex::new(r#""installdir"\s+"([^"]+)""#).unwrap();
+    
+    if let Some(cap) = re.captures(&content) {
+        let install_dir_name = &cap[1];
+        let full_path = manifest_path.parent().unwrap().join("common").join(install_dir_name);
+        if full_path.exists() {
+            return Ok(Some(full_path.to_string_lossy().to_string()));
+        }
+    }
+    
+    Ok(None)
+}
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -127,13 +235,19 @@ pub fn run() {
             open_mod_folder,
             fetch_packages,
             get_packages,
+            lookup_packages_by_names,
             fetch_package_by_name,
             delete_profile_folder,
             remove_mod,
             check_directory_exists,
             export_profile,
             share_profile,
-            confirm_dialog
+            get_settings,
+            save_settings,
+            get_game_path,
+            get_game_path,
+            confirm_dialog,
+            read_image
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -160,13 +274,54 @@ async fn select_folder(app: AppHandle) -> Result<Option<String>, String> {
     Ok(file_path.map(|p| p.to_string()))
 }
 
+#[derive(serde::Deserialize)]
+pub struct FileFilter {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
 #[command]
-async fn select_file(app: AppHandle) -> Result<Option<String>, String> {
+async fn select_file(app: AppHandle, filters: Option<Vec<FileFilter>>) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    let file_path = app.dialog().file()
-        .add_filter("r2modman Profile", &["r2z", "zip"])
-        .blocking_pick_file();
+    let mut builder = app.dialog().file();
+
+    if let Some(fs) = filters {
+        for f in fs {
+            // Convert Vec<String> to Vec<&str>
+            let exts: Vec<&str> = f.extensions.iter().map(|s| s.as_str()).collect();
+            builder = builder.add_filter(f.name, &exts);
+        }
+    } else {
+        // Default to r2modman profile if no filters provided
+        builder = builder.add_filter("r2modman Profile", &["r2z", "zip"]);
+    }
+
+    let file_path = builder.blocking_pick_file();
     Ok(file_path.map(|p| p.to_string()))
+}
+
+#[command]
+async fn read_image(path: String) -> Result<Option<String>, String> {
+    use base64::Engine;
+    let path_buf = std::path::PathBuf::from(&path);
+    if !path_buf.exists() {
+        return Ok(None);
+    }
+    
+    let bytes = fs::read(&path_buf).map_err(|e| e.to_string())?;
+    let base64_str = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    
+    // Determine mime type based on extension
+    let extension = path_buf.extension().and_then(|e| e.to_str()).unwrap_or("png").to_lowercase();
+    let mime = match extension.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => "application/octet-stream"
+    };
+    
+    Ok(Some(format!("data:{};base64,{}", mime, base64_str)))
 }
 
 #[command]
@@ -291,7 +446,10 @@ async fn fetch_packages(app: AppHandle, state: tauri::State<'_, AppState>, game_
         let start_time = SystemTime::now();
         
         let url = format!("https://thunderstore.io/c/{}/api/v1/package/", game_id);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .user_agent("r2modmac/0.0.1")
+            .build()
+            .map_err(|e| e.to_string())?;
         let response = client.get(&url).send().await.map_err(|e| e.to_string())?;
         
         if !response.status().is_success() {
@@ -371,6 +529,46 @@ async fn get_packages(
 }
 
 #[command]
+async fn lookup_packages_by_names(
+    state: tauri::State<'_, AppState>,
+    game_id: String,
+    names: Vec<String>
+) -> Result<serde_json::Value, String> {
+    let packages_lock = state.packages.lock().map_err(|_| "Failed to lock state".to_string())?;
+    
+    if let Some(packages) = packages_lock.get(&game_id) {
+        let mut found = Vec::new();
+        let mut unknown = Vec::new();
+        
+        let re = regex::Regex::new(r"^(.*)-(\d+\.\d+\.\d+)$").unwrap();
+        
+        for name in names {
+            // Strip version if present: "Author-Mod-1.0.0" -> "Author-Mod"
+            let clean_name = if let Some(caps) = re.captures(&name) {
+                caps.get(1).map_or(name.clone(), |m| m.as_str().to_string())
+            } else {
+                name.clone()
+            };
+            
+            if let Some(pkg) = packages.iter().find(|p| {
+                p["full_name"].as_str().unwrap_or("") == clean_name
+            }) {
+                found.push(pkg.clone());
+            } else {
+                unknown.push(name.clone());
+            }
+        }
+        
+        Ok(serde_json::json!({
+            "found": found,
+            "unknown": unknown
+        }))
+    } else {
+        Err("Game packages not loaded".to_string())
+    }
+}
+
+#[command]
 async fn fetch_package_by_name(state: tauri::State<'_, AppState>, name: String, game_id: Option<String>) -> Result<Option<serde_json::Value>, String> {
     // name might be "Namespace-Name" or "Namespace-Name-Version"
     
@@ -414,7 +612,11 @@ async fn fetch_package_by_name(state: tauri::State<'_, AppState>, name: String, 
     let package_name = parts[1];
 
     let url = format!("https://thunderstore.io/api/v1/package/{}/{}/", namespace, package_name);
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .user_agent("r2modmac/0.0.1")
+        .build()
+        .map_err(|e| e.to_string())?;
+    
     let response = client.get(&url).send().await.map_err(|e| e.to_string())?;
 
     if response.status() == 404 {

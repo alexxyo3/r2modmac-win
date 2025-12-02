@@ -13,4 +13,5 @@ export interface Profile {
     mods: InstalledMod[];
     dateCreated: number;
     lastUsed: number;
+    profileImageUrl?: string;
 }

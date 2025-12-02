@@ -3,19 +3,40 @@ import { useRef, useState, useEffect } from 'react';
 import { ModCard } from './ModCard';
 import type { Package } from '../types/thunderstore';
 
+import type { InstalledMod } from '../types/profile';
+
 interface VirtualizedModGridProps {
     packages: Package[];
+    installedMods: InstalledMod[];
     onInstall: (pkg: Package) => void;
+    onUninstall: (pkg: Package) => void;
     onModClick: (pkg: Package) => void;
     onLoadMore?: () => void;
 }
 
-export function VirtualizedModGrid({ packages, onInstall, onModClick, onLoadMore }: VirtualizedModGridProps) {
+export function VirtualizedModGrid({ packages, installedMods, onInstall, onUninstall, onModClick, onLoadMore }: VirtualizedModGridProps) {
     const parentRef = useRef<HTMLDivElement>(null);
     const [columnCount, setColumnCount] = useState(3);
 
     const COLUMN_WIDTH = 320;
     const GAP = 16;
+
+    // Helper to check install status
+    const getInstallStatus = (pkg: Package): 'installed' | 'not_installed' | 'update_available' => {
+        const installed = installedMods.find(m => m.fullName.startsWith(pkg.full_name));
+        if (!installed) return 'not_installed';
+
+        // Compare versions
+        // Simple string comparison might work if format is consistent, but semver is better.
+        // For now, assuming if strings are different and installed exists, it might be an update.
+        // But let's be safer: if installed version != latest version, show update.
+        // Actually, let's just check if they are different.
+        if (installed.versionNumber !== pkg.versions[0].version_number) {
+            return 'update_available';
+        }
+
+        return 'installed';
+    };
 
     useEffect(() => {
         const updateColumnCount = () => {
@@ -111,8 +132,9 @@ export function VirtualizedModGrid({ packages, onInstall, onModClick, onLoadMore
                                         key={pkg.uuid4}
                                         mod={pkg.versions[0]}
                                         onInstall={() => onInstall(pkg)}
+                                        onUninstall={() => onUninstall(pkg)}
                                         onClick={() => onModClick(pkg)}
-                                        isInstalled={false}
+                                        installStatus={getInstallStatus(pkg)}
                                     />
                                 ))}
                             </div>

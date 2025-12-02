@@ -6,6 +6,8 @@ import { VirtualizedModGrid } from './components/VirtualizedModGrid'
 import { ModDetailModal } from './components/ModDetailModal'
 import { ProfileList } from './components/ProfileList'
 import { ProgressModal } from './components/ProgressModal'
+import { SettingsModal } from './components/SettingsModal'
+import { ExportModal } from './components/ExportModal'
 import { useProfileStore } from './store/useProfileStore'
 import type { Community, Package, PackageVersion } from './types/thunderstore'
 import type { InstalledMod } from './types/profile'
@@ -29,6 +31,8 @@ function App() {
     progress: 0,
     currentTask: ''
   })
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false)
 
   const {
     profiles,
@@ -37,6 +41,7 @@ function App() {
     activeProfileId,
     selectProfile,
     deleteProfile,
+    updateProfile,
     addMod,
     removeMod,
     toggleMod
@@ -230,6 +235,47 @@ function App() {
     }
   }
 
+  const handleExportFile = async () => {
+    if (!activeProfileId) return;
+    try {
+      const result = await window.ipcRenderer.exportProfile(activeProfileId);
+      if (result.success) {
+        alert(`Profile exported to: ${result.path}`);
+      }
+    } catch (e: any) {
+      alert(`Export failed: ${e.message}`);
+    }
+  };
+
+  const handleExportCode = async () => {
+    if (!activeProfileId) return;
+
+    setProgressState({
+      isOpen: true,
+      title: 'Generating Share Code',
+      progress: 50,
+      currentTask: 'Uploading profile...'
+    });
+
+    try {
+      const code = await window.ipcRenderer.shareProfile(activeProfileId);
+
+      setProgressState(prev => ({ ...prev, progress: 100, currentTask: 'Done!' }));
+      setTimeout(() => {
+        setProgressState(prev => ({ ...prev, isOpen: false }));
+
+        // Copy to clipboard
+        navigator.clipboard.writeText(code);
+        alert(`Profile Code Generated: ${code}\n\nCopied to clipboard!`);
+      }, 500);
+
+    } catch (e: any) {
+      console.error("Share failed:", e);
+      setProgressState(prev => ({ ...prev, isOpen: false }));
+      alert(`Failed to generate code: ${e}`);
+    }
+  };
+
   const processImportResult = async (result: any) => {
     if (result.type === 'profile') {
       // It's an r2modman profile export
@@ -240,41 +286,52 @@ function App() {
         profileName = profileName.substring(10);
       }
 
+      // Extract mod names from the import
+      const modNames = result.mods.map((m: any) => m.name);
+
+      // Batch lookup all packages from cache
+      const lookup = await window.ipcRenderer.lookupPackagesByNames(
+        selectedCommunity!,
+        modNames
+      );
+
+      // If there are unknown mods, show a confirmation dialog
+      if (lookup.unknown.length > 0) {
+        const knownCount = lookup.found.length;
+        const unknownCount = lookup.unknown.length;
+        const unknownList = lookup.unknown.join('\n');
+
+        const proceed = await window.ipcRenderer.confirm(
+          'Some mods cannot be found',
+          `${unknownCount} mod(s) from the profile were not found and will not be installed:\n\n${unknownList}\n\n${knownCount} mod(s) will be installed. Do you want to continue?`
+        );
+
+        if (!proceed) return;
+      }
+
       const newProfileId = createProfile(profileName, selectedCommunity!);
 
       setProgressState({
         isOpen: true,
         title: 'Importing Profile',
         progress: 0,
-        currentTask: 'Creating profile...'
+        currentTask: 'Starting import...'
       });
 
-      // Wait for profile creation
       setTimeout(async () => {
+        // Filter out unknown mods
+        const modsToInstall = result.mods.filter((m: any) =>
+          !lookup.unknown.includes(m.name)
+        );
+
         let installedCount = 0;
-        const totalMods = result.mods.length;
+        const totalMods = modsToInstall.length;
         const BATCH_SIZE = 5;
         const failedMods: string[] = [];
 
-        // Helper for retrying fetches
-        const fetchWithRetry = async (name: string, retries = 3) => {
-          for (let i = 0; i < retries; i++) {
-            try {
-              // Pass selectedCommunity (gameId) to use cache
-              const pkg = await window.ipcRenderer.fetchPackageByName(name, selectedCommunity);
-              if (pkg) return pkg;
-              await new Promise(r => setTimeout(r, 1000)); // 1s delay
-            } catch (e) {
-              if (i === retries - 1) throw e;
-              await new Promise(r => setTimeout(r, 1000 * (i + 1)));
-            }
-          }
-          return null;
-        };
-
         // Process in batches
         for (let i = 0; i < totalMods; i += BATCH_SIZE) {
-          const batch = result.mods.slice(i, i + BATCH_SIZE);
+          const batch = modsToInstall.slice(i, i + BATCH_SIZE);
 
           await Promise.all(batch.map(async (mod: any, batchIdx: number) => {
             const globalIdx = i + batchIdx;
@@ -287,63 +344,35 @@ function App() {
             }));
 
             try {
-              // 1. Find package
-              let pkg: Package | undefined | null = packages.find(p => p.full_name === mod.name);
-
-              if (!pkg) {
-                try {
-                  console.log(`Fetching missing package info for ${mod.name}...`);
-                  pkg = await fetchWithRetry(mod.name);
-                } catch (e) {
-                  console.error(`Failed to fetch info for ${mod.name}`, e);
-                }
-              }
+              // Find package from lookup results
+              const pkg = lookup.found.find((p: Package) => p.full_name === mod.name);
 
               if (pkg) {
                 const version = pkg.versions.find(v => v.version_number === mod.version) || pkg.versions[0];
 
-                // 2. Install with retry
-                let installed = false;
-                for (let attempt = 0; attempt < 3; attempt++) {
-                  try {
-                    const installResult = await window.ipcRenderer.installMod(
-                      newProfileId,
-                      version.download_url,
-                      version.full_name
-                    );
+                const installResult = await window.ipcRenderer.installMod(
+                  newProfileId,
+                  version.download_url,
+                  version.full_name
+                );
 
-                    if (installResult.success) {
-                      const installedMod: InstalledMod = {
-                        uuid4: version.uuid4,
-                        fullName: version.full_name,
-                        versionNumber: version.version_number,
-                        iconUrl: version.icon,
-                        enabled: mod.enabled
-                      };
-                      addMod(newProfileId, installedMod);
-                      installedCount++;
-                      installed = true;
-                      break; // Success
-                    } else {
-                      throw new Error(installResult.error);
-                    }
-                  } catch (e) {
-                    console.warn(`Install attempt ${attempt + 1} failed for ${mod.name}`, e);
-                    if (attempt < 2) await new Promise(r => setTimeout(r, 1000));
-                  }
+                if (installResult.success) {
+                  const installedMod: InstalledMod = {
+                    uuid4: version.uuid4,
+                    fullName: version.full_name,
+                    versionNumber: version.version_number,
+                    iconUrl: version.icon,
+                    enabled: mod.enabled
+                  };
+                  addMod(newProfileId, installedMod);
+                  installedCount++;
+                } else {
+                  throw new Error(installResult.error);
                 }
-
-                if (!installed) {
-                  failedMods.push(mod.name);
-                  console.error(`Failed to install ${mod.name} after retries`);
-                }
-              } else {
-                failedMods.push(mod.name);
-                console.warn(`Mod ${mod.name} could not be found or fetched.`);
               }
             } catch (e) {
               failedMods.push(mod.name);
-              console.error(`Error processing ${mod.name}`, e);
+              console.error(`Error installing ${mod.name}`, e);
             }
           }));
         }
@@ -353,7 +382,7 @@ function App() {
           setProgressState(prev => ({ ...prev, isOpen: false }));
           let msg = `Imported profile "${result.name}" with ${installedCount}/${totalMods} mods.`;
           if (failedMods.length > 0) {
-            msg += `\n\nFailed mods:\n${failedMods.join('\n')}`;
+            msg += `\n\nFailed to install:\n${failedMods.join('\n')}`;
           }
           alert(msg);
         }, 500);
@@ -408,7 +437,12 @@ function App() {
 
           {loading ? (
             <div className="text-center text-gray-400 py-12">
-              <div className="animate-spin text-4xl mb-4">⚙️</div>
+              <div className="flex justify-center">
+                <svg className="animate-spin h-10 w-10 text-blue-500 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              </div>
               <p>Loading games...</p>
             </div>
           ) : (
@@ -449,85 +483,46 @@ function App() {
           onImportProfile={handleImportProfile}
           onImportFile={handleImportFile}
           onDeleteProfile={deleteProfile}
+          onUpdateProfile={updateProfile}
         />
       </div>
     );
   } else {
     // STEP 3: MOD MANAGEMENT
     const activeProfile = profiles.find(p => p.id === activeProfileId);
+    const currentCommunity = communities.find(c => c.identifier === selectedCommunity);
 
     const sidebar = (
       <div className="h-full flex flex-col bg-gray-900 border-r border-gray-800 w-80">
-        <div className="p-4 border-b border-gray-800">
-          <button
-            onClick={() => selectProfile('')} // Go back to profile list
-            className="text-gray-400 hover:text-white flex items-center gap-2 text-sm mb-4"
-          >
-            ← Change Profile
-          </button>
-
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl shadow-lg flex items-center justify-center text-xl font-bold text-white">
-              {activeProfile?.name.charAt(0).toUpperCase()}
-            </div>
+        <div className="p-5 border-b border-gray-800">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => selectProfile('')}
+              className="text-gray-400 hover:text-white p-1.5 -ml-2 rounded-lg hover:bg-gray-800 transition-colors"
+              title="Change Profile"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+              </svg>
+            </button>
+            {activeProfile?.profileImageUrl ? (
+              <img
+                src={activeProfile.profileImageUrl}
+                alt={activeProfile.name}
+                className="w-12 h-12 rounded-xl shadow-lg object-cover bg-gray-800"
+              />
+            ) : (
+              <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl shadow-lg flex items-center justify-center text-xl font-bold text-white">
+                {activeProfile?.name.charAt(0).toUpperCase()}
+              </div>
+            )}
             <div className="min-w-0 flex-1">
               <h2 className="font-bold text-white truncate text-lg">{activeProfile?.name}</h2>
               <p className="text-xs text-gray-500 truncate">{activeProfile?.mods.length} mods installed</p>
             </div>
           </div>
 
-          <div className="flex gap-2">
-            <button
-              onClick={async () => {
-                if (!activeProfileId) return;
-                try {
-                  const result = await window.ipcRenderer.exportProfile(activeProfileId);
-                  if (result.success) {
-                    alert(`Profile exported to: ${result.path}`);
-                  }
-                } catch (e: any) {
-                  alert(`Export failed: ${e.message}`);
-                }
-              }}
-              className="flex-1 bg-gray-800 hover:bg-gray-700 text-white text-xs py-2 px-3 rounded-lg transition-colors flex items-center justify-center gap-2 border border-gray-700"
-            >
-              <span>📤</span> Export Profile
-            </button>
-            <button
-              onClick={async () => {
-                if (!activeProfileId) return;
 
-                setProgressState({
-                  isOpen: true,
-                  title: 'Generating Share Code',
-                  progress: 50,
-                  currentTask: 'Uploading profile...'
-                });
-
-                try {
-                  const code = await window.ipcRenderer.shareProfile(activeProfileId);
-
-                  setProgressState(prev => ({ ...prev, progress: 100, currentTask: 'Done!' }));
-                  setTimeout(() => {
-                    setProgressState(prev => ({ ...prev, isOpen: false }));
-
-                    // Copy to clipboard
-                    navigator.clipboard.writeText(code);
-                    alert(`Profile Code Generated: ${code}\n\nCopied to clipboard!`);
-                  }, 500);
-
-                } catch (e: any) {
-                  console.error("Share failed:", e);
-                  setProgressState(prev => ({ ...prev, isOpen: false }));
-                  alert(`Failed to generate code: ${e}`);
-                }
-              }}
-              className="bg-gray-800 hover:bg-gray-700 text-white text-xs py-2 px-3 rounded-lg transition-colors border border-gray-700"
-              title="Get Share Code"
-            >
-              🔗
-            </button>
-          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -649,37 +644,97 @@ function App() {
           })}
 
           {activeProfile?.mods.length === 0 && (
-            <div className="text-center py-12 px-4">
-              <div className="text-4xl mb-3 opacity-20">📦</div>
+            <div className="text-center py-12 px-4 flex flex-col items-center">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 mb-3 opacity-20 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+              </svg>
               <p className="text-gray-500 text-sm font-medium">No mods installed</p>
               <p className="text-gray-600 text-xs mt-1">Search for mods to get started</p>
             </div>
           )}
         </div>
+        <div className="p-4 border-t border-gray-800 space-y-2">
+          {/* Game Info */}
+          {currentCommunity && (
+            <div className="flex items-center gap-3 mb-4 px-2">
+              <div className="w-10 h-10 rounded-lg overflow-hidden bg-gray-800 flex-shrink-0 border border-gray-700">
+                {communityImages[currentCommunity.identifier] ? (
+                  <img
+                    src={communityImages[currentCommunity.identifier]}
+                    alt={currentCommunity.name}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-gray-600">
+                    {currentCommunity.name.charAt(0)}
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-white truncate">{currentCommunity.name}</h3>
+              </div>
+            </div>
+          )}
+
+          <button
+            onClick={() => setIsExportModalOpen(true)}
+            className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors w-full px-2 py-2 rounded-lg hover:bg-gray-800"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            </svg>
+            <span>Export Profile</span>
+          </button>
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors w-full px-2 py-2 rounded-lg hover:bg-gray-800"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            <span>Settings</span>
+          </button>
+        </div>
       </div>
     );
 
     const main = (
-      <div className="flex flex-col h-full bg-gray-900">
-        <div className="p-6 border-b border-gray-800 flex items-center justify-between gap-4">
+      <div className="flex-1 flex flex-col min-w-0 bg-gray-900 h-full">
+        <div className="p-5 border-b border-gray-800 flex items-center justify-between gap-4 flex-shrink-0">
           <h1 className="text-2xl font-bold text-white">Browse Mods</h1>
           <div className="w-96">
             <SearchBar value={searchQuery} onChange={setSearchQuery} />
           </div>
         </div>
 
-        <div className="flex-1 overflow-hidden relative">
+        <div className="flex-1 overflow-hidden relative flex flex-col">
           {loadingMods ? (
             <div className="absolute inset-0 flex items-center justify-center">
-              <div className="text-center">
-                <div className="animate-spin text-4xl mb-4 text-blue-500">⚙️</div>
+              <div className="text-center flex flex-col items-center">
+                <svg className="animate-spin h-10 w-10 text-blue-500 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
                 <p className="text-gray-400">Fetching packages...</p>
               </div>
             </div>
           ) : (
             <VirtualizedModGrid
               packages={filteredPackages}
+              installedMods={activeProfile?.mods || []}
               onInstall={handleInstallMod}
+              onUninstall={async (pkg) => {
+                if (!activeProfileId) return;
+                const confirmed = await window.ipcRenderer.confirm('Uninstall Mod', `Uninstall ${pkg.name}?`);
+                if (confirmed) {
+                  // Find the installed mod UUID
+                  const installed = activeProfile?.mods.find(m => m.fullName.startsWith(pkg.full_name));
+                  if (installed) {
+                    await removeMod(activeProfileId, installed.uuid4);
+                  }
+                }
+              }}
               onModClick={setSelectedMod}
               onLoadMore={handleLoadMore}
             />
@@ -694,9 +749,6 @@ function App() {
   // WRAPPER
   return (
     <div className="h-screen w-screen flex flex-col bg-gray-900 overflow-hidden">
-      {/* Fixed TitleBar for dragging */}
-      <div data-tauri-drag-region className="h-8 w-full flex-shrink-0 bg-transparent z-50" />
-
       {/* Scrollable Content Area */}
       <div className="flex-1 overflow-hidden relative">
         {content}
@@ -713,6 +765,18 @@ function App() {
               handleInstallMod(selectedMod, activeProfileId);
             }
           }}
+          onUninstall={async () => {
+            if (!activeProfileId) return;
+            const confirmed = await window.ipcRenderer.confirm('Uninstall Mod', `Uninstall ${selectedMod.name}?`);
+            if (confirmed) {
+              const profile = profiles.find(p => p.id === activeProfileId);
+              const installed = profile?.mods.find(m => m.fullName.startsWith(selectedMod.full_name));
+              if (installed) {
+                await removeMod(activeProfileId, installed.uuid4);
+                setSelectedMod(null); // Close modal after uninstall
+              }
+            }
+          }}
           isInstalled={
             activeProfileId
               ? profiles.find(p => p.id === activeProfileId)?.mods.some(m => m.fullName.startsWith(selectedMod.full_name)) ?? false
@@ -726,6 +790,18 @@ function App() {
         title={progressState.title}
         progress={progressState.progress}
         currentTask={progressState.currentTask}
+      />
+
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+      />
+
+      <ExportModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        onExportFile={handleExportFile}
+        onExportCode={handleExportCode}
       />
     </div>
   )

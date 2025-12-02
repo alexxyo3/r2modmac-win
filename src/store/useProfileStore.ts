@@ -9,6 +9,7 @@ interface ProfileState {
     createProfile: (name: string, gameIdentifier: string) => string;
     selectProfile: (profileId: string) => void;
     deleteProfile: (profileId: string) => Promise<void>;
+    updateProfile: (profileId: string, updates: Partial<Profile>) => void;
     setProfiles: (profiles: Profile[]) => void;
     addMod: (profileId: string, mod: InstalledMod) => void;
     removeMod: (profileId: string, modId: string) => Promise<void>;
@@ -62,6 +63,16 @@ export const useProfileStore = create<ProfileState>((set) => ({
                 profiles: updatedProfiles,
                 activeProfileId: state.activeProfileId === profileId ? null : state.activeProfileId
             };
+        });
+    },
+
+    updateProfile: (profileId, updates) => {
+        set((state) => {
+            const updatedProfiles = state.profiles.map(p =>
+                p.id === profileId ? { ...p, ...updates } : p
+            );
+            window.ipcRenderer.saveProfiles(updatedProfiles);
+            return { profiles: updatedProfiles };
         });
     },
 
