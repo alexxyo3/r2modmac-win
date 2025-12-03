@@ -4,7 +4,7 @@
 
 ![r2modmac Banner](https://i.ibb.co/r2JkH8Px/Screenshot-2025-12-03-alle-11-24-00.png)
 
-**Un mod manager moderno e nativo per macOS, ispirato a r2modman**
+**Un mod manager moderno e nativo per macOS, ispirato a r2modman, riprogettato da 0**
 
 [![GitHub release](https://img.shields.io/github/v/release/Zard-Studios/r2modmac)](https://github.com/Zard-Studios/r2modmac/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
