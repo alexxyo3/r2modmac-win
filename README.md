@@ -79,7 +79,7 @@ Se vedi questo errore quando apri l'app, è perché non è stata firmata con un 
 
 **Soluzione rapida:**
 ```bash
-sudo xattr -cr /Applications/r2modmac.app
+sudo find /Applications/r2modmac.app -exec xattr -c {} \;
 ```
 
 Inserisci la password quando richiesto, poi prova ad aprire l'app di nuovo.
