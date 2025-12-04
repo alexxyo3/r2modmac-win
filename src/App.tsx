@@ -211,6 +211,44 @@ function App() {
     }
   };
 
+  const handleUpdateMod = async (pkg: Package, targetProfileId?: string) => {
+    const profileIdToUse = targetProfileId || activeProfileId;
+    if (!profileIdToUse) {
+      alert('Please select a profile first');
+      return;
+    }
+
+    setProgressState({
+      isOpen: true,
+      title: `Updating ${pkg.name}`,
+      progress: 0,
+      currentTask: 'Removing old version...'
+    });
+
+    try {
+      // 1. Find and remove the old version
+      const profile = profiles.find(p => p.id === profileIdToUse);
+      const oldMod = profile?.mods.find(m => m.fullName.startsWith(pkg.full_name));
+
+      if (oldMod) {
+        setProgressState(prev => ({ ...prev, progress: 20, currentTask: 'Uninstalling old version...' }));
+        await removeMod(profileIdToUse, oldMod.uuid4);
+      }
+
+      // 2. Install the new version
+      const version = pkg.versions[0];
+      setProgressState(prev => ({ ...prev, progress: 40, currentTask: 'Installing new version...' }));
+      await installModWithDependencies(pkg, version, new Set(), profileIdToUse);
+
+      setProgressState(prev => ({ ...prev, progress: 100, currentTask: 'Update complete!' }));
+      setTimeout(() => setProgressState(prev => ({ ...prev, isOpen: false })), 500);
+    } catch (err: any) {
+      console.error('Failed to update mod:', err);
+      setProgressState(prev => ({ ...prev, isOpen: false }));
+      alert(`Failed to update mod: ${err.message}`);
+    }
+  };
+
   const handleImportProfile = async (code: string) => {
     if (!selectedCommunity) return;
 
@@ -765,6 +803,11 @@ function App() {
               handleInstallMod(selectedMod, activeProfileId);
             }
           }}
+          onUpdate={() => {
+            if (activeProfileId) {
+              handleUpdateMod(selectedMod, activeProfileId);
+            }
+          }}
           onUninstall={async () => {
             if (!activeProfileId) return;
             const confirmed = await window.ipcRenderer.confirm('Uninstall Mod', `Uninstall ${selectedMod.name}?`);
@@ -780,6 +823,16 @@ function App() {
           isInstalled={
             activeProfileId
               ? profiles.find(p => p.id === activeProfileId)?.mods.some(m => m.fullName.startsWith(selectedMod.full_name)) ?? false
+              : false
+          }
+          hasUpdate={
+            activeProfileId
+              ? (() => {
+                const profile = profiles.find(p => p.id === activeProfileId);
+                const installed = profile?.mods.find(m => m.fullName.startsWith(selectedMod.full_name));
+                const latestVersion = selectedMod.versions[0].version_number;
+                return installed ? latestVersion !== installed.versionNumber : false;
+              })()
               : false
           }
         />

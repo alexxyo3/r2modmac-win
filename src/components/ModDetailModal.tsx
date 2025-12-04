@@ -5,11 +5,13 @@ interface ModDetailModalProps {
     isOpen: boolean;
     onClose: () => void;
     onInstall: () => void;
+    onUpdate?: () => void;
     onUninstall?: () => void;
     isInstalled: boolean;
+    hasUpdate?: boolean;
 }
 
-export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUninstall, isInstalled }: ModDetailModalProps) {
+export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUninstall, isInstalled, hasUpdate = false }: ModDetailModalProps) {
     if (!isOpen) return null;
 
     return (
@@ -129,16 +131,22 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUninstall, i
                     )}
                     <button
                         onClick={() => {
-                            onInstall();
+                            if (hasUpdate && onUpdate) {
+                                onUpdate();
+                            } else {
+                                onInstall();
+                            }
                             onClose();
                         }}
-                        disabled={isInstalled}
-                        className={`flex-1 px-4 py-2.5 rounded-lg font-semibold transition-colors ${isInstalled
-                            ? 'bg-green-500/10 text-green-500 border border-green-500/20 cursor-default'
-                            : 'bg-blue-600 hover:bg-blue-500 text-white'
+                        disabled={isInstalled && !hasUpdate}
+                        className={`flex-1 px-4 py-2.5 rounded-lg font-semibold transition-colors ${hasUpdate
+                                ? 'bg-amber-500 hover:bg-amber-600 text-white'
+                                : isInstalled
+                                    ? 'bg-green-500/10 text-green-500 border border-green-500/20 cursor-default'
+                                    : 'bg-blue-600 hover:bg-blue-500 text-white'
                             }`}
                     >
-                        {isInstalled ? 'Installed' : 'Install Mod'}
+                        {hasUpdate ? 'Update' : isInstalled ? 'Installed' : 'Install Mod'}
                     </button>
                 </div>
             </div>

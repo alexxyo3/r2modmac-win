@@ -222,6 +222,18 @@ pub fn run() {
         .manage(AppState {
             packages: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
+        .setup(|app| {
+            // Clean cache on startup
+            if let Ok(cache_dir) = app.path().app_cache_dir() {
+                if cache_dir.exists() {
+                    eprintln!("[startup] Cleaning cache directory: {:?}", cache_dir);
+                    let _ = fs::remove_dir_all(&cache_dir);
+                    let _ = fs::create_dir_all(&cache_dir);
+                    eprintln!("[startup] Cache cleaned successfully");
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_profiles,
             save_profiles,
