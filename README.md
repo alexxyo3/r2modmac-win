@@ -35,7 +35,7 @@ r2modmac is a native mod manager for macOS that allows you to easily manage mods
 <div align="center">
 
 ### Game Selection
-![Game Selection](https://i.ibb.co/N6VNg4VL/Screenshot-2025-12-05-alle-21-17-07.png)
+![Game Selection](https://i.ibb.co/kgHDVdHh/Screenshot-2025-12-05-alle-21-17-07.png)
 
 ### Profile Management
 ![Profile Management](https://i.ibb.co/CshMpFDJ/Screenshot-2025-12-03-alle-11-24-57.png)
