@@ -13,6 +13,7 @@ interface ProfileSidebarProps {
     onOpenModFolder: (profileId: string, modName: string) => void;
     onUninstallMod: (mod: InstalledMod) => void;
     onInstallToGame: () => void;
+    onResolvePackage: (mod: InstalledMod) => Promise<Package | null>;
     onExportProfile: () => void;
     onOpenSettings: () => void;
 }
@@ -28,6 +29,7 @@ export const ProfileSidebar: React.FC<ProfileSidebarProps> = ({
     onOpenModFolder,
     onUninstallMod,
     onInstallToGame,
+    onResolvePackage,
     onExportProfile,
     onOpenSettings
 }) => {
@@ -123,9 +125,23 @@ export const ProfileSidebar: React.FC<ProfileSidebarProps> = ({
 
                             <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center opacity-0 group-hover:opacity-100 transition-opacity gap-1 bg-gray-800/90 rounded-lg p-1 shadow-sm backdrop-blur-sm z-20">
                                 <button
-                                    onClick={(e) => {
+                                    onClick={async (e) => {
                                         e.stopPropagation();
-                                        if (pkg) onViewModDetails(pkg);
+                                        if (pkg) {
+                                            onViewModDetails(pkg);
+                                        } else {
+                                            // Fallback: try to resolve via API
+                                            try {
+                                                const resolved = await onResolvePackage(mod);
+                                                if (resolved) {
+                                                    onViewModDetails(resolved);
+                                                } else {
+                                                    console.warn("Could not resolve package for mod:", mod.fullName);
+                                                }
+                                            } catch (err) {
+                                                console.error("Error resolving package:", err);
+                                            }
+                                        }
                                     }}
                                     className="p-1.5 text-gray-400 hover:text-blue-400 hover:bg-blue-400/10 rounded-md transition-colors"
                                     title="View Details"

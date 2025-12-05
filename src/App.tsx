@@ -36,6 +36,7 @@ function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [showExportModal, setShowExportModal] = useState(false)
   const [showCrossOverGuide, setShowCrossOverGuide] = useState(false)
+  const [hideCrossOverGuide, setHideCrossOverGuide] = useState(false)
 
   const {
     profiles,
@@ -78,21 +79,61 @@ function App() {
     }
   }, [searchQuery])
 
+  const [favoriteGames, setFavoriteGames] = useState<string[]>([])
+
   const loadData = async () => {
     setLoading(true)
     try {
-      const [data, images] = await Promise.all([
+      const [data, images, settings] = await Promise.all([
         window.ipcRenderer.fetchCommunities(),
-        window.ipcRenderer.fetchCommunityImages()
+        window.ipcRenderer.fetchCommunityImages(),
+        window.ipcRenderer.getSettings()
       ])
       setCommunities(data)
       setCommunityImages(images)
+      if (settings.favorite_games) {
+        setFavoriteGames(settings.favorite_games)
+      }
       console.log(`Loaded ${data.length} communities and ${Object.keys(images).length} images`)
     } catch (err) {
       console.error('Failed to load data', err)
     }
     setLoading(false)
   }
+
+  const toggleFavorite = async (identifier: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const newFavorites = favoriteGames.includes(identifier)
+      ? favoriteGames.filter(id => id !== identifier)
+      : [...favoriteGames, identifier];
+
+    setFavoriteGames(newFavorites);
+
+    // Save to settings
+    try {
+      const settings = await window.ipcRenderer.getSettings();
+      await window.ipcRenderer.saveSettings({
+        ...settings,
+        favorite_games: newFavorites
+      });
+    } catch (e) {
+      console.error("Failed to save favorites", e);
+    }
+  }
+
+  const filteredCommunities = communities
+    .filter(c =>
+      c.name.toLowerCase().includes(gameSearchQuery.toLowerCase()) ||
+      c.identifier.toLowerCase().includes(gameSearchQuery.toLowerCase())
+    )
+    .sort((a, b) => {
+      // Sort favorites first
+      const aFav = favoriteGames.includes(a.identifier);
+      const bFav = favoriteGames.includes(b.identifier);
+      if (aFav && !bFav) return -1;
+      if (!aFav && bFav) return 1;
+      return a.name.localeCompare(b.name);
+    });
 
   const loadPackages = async (communityId: string, pageNum: number, reset: boolean = false) => {
     if (reset) {
@@ -136,31 +177,70 @@ function App() {
     const profileIdToUse = targetProfileId || activeProfileId;
     if (!profileIdToUse) throw new Error("No profile selected");
 
-    // 1. Install dependencies first
+    // 1. Collect all dependencies that need to be installed
+    const depsToInstall: string[] = [];
     for (const depString of version.dependencies) {
       // depString format: "TeamName-ModName-Version"
-      const [team, mod, ver] = depString.split('-');
-      const depFullName = `${team}-${mod}`;
+      const parts = depString.split('-');
+      if (parts.length < 3) continue;
+      const depFullName = `${parts[0]}-${parts[1]}`;
 
       // Check if already installed in profile (skip if so)
       const activeProfile = profiles.find(p => p.id === profileIdToUse);
       if (activeProfile?.mods.some(m => m.fullName.startsWith(depFullName))) {
+        console.log(`[Dependencies] Skipping ${depFullName} - already installed`);
         continue;
       }
 
-      // Find package in current list
-      const depPkg = packages.find(p => p.full_name === depFullName);
-      if (depPkg) {
-        // Find matching version or latest
-        const depVersion = depPkg.versions.find(v => v.version_number === ver) || depPkg.versions[0];
-        await installModWithDependencies(depPkg, depVersion, installedCache, profileIdToUse);
-      } else {
-        console.warn(`Dependency ${depString} not found in current package list`);
+      // Check if already in cache (being installed in this session)
+      if (installedCache.has(depFullName)) {
+        console.log(`[Dependencies] Skipping ${depFullName} - in install cache`);
+        continue;
+      }
+
+      depsToInstall.push(depFullName);
+    }
+
+    // 2. Fetch all missing dependencies from backend in one call
+    if (depsToInstall.length > 0 && selectedCommunity) {
+      console.log(`[Dependencies] Fetching ${depsToInstall.length} dependencies:`, depsToInstall);
+
+      setProgressState(prev => ({
+        ...prev,
+        currentTask: `Fetching ${depsToInstall.length} dependencies...`
+      }));
+
+      try {
+        const result = await window.ipcRenderer.lookupPackagesByNames(selectedCommunity, depsToInstall);
+
+        // Install each found dependency recursively
+        for (const depPkg of result.found) {
+          const depVersion = depPkg.versions[0];
+          if (depVersion) {
+            setProgressState(prev => ({
+              ...prev,
+              currentTask: `Installing dependency: ${depPkg.name}...`
+            }));
+            await installModWithDependencies(depPkg, depVersion, installedCache, profileIdToUse);
+          }
+        }
+
+        // Log any dependencies that weren't found
+        if (result.unknown.length > 0) {
+          console.warn(`[Dependencies] Could not find: ${result.unknown.join(', ')}`);
+        }
+      } catch (err) {
+        console.error('[Dependencies] Failed to lookup dependencies:', err);
       }
     }
 
-    // 2. Install the mod itself
+    // 3. Install the mod itself
     try {
+      setProgressState(prev => ({
+        ...prev,
+        currentTask: `Installing ${pkg.name}...`
+      }));
+
       const result = await window.ipcRenderer.installMod(
         profileIdToUse,
         version.download_url,
@@ -176,6 +256,7 @@ function App() {
           enabled: true
         };
         addMod(profileIdToUse, installedMod);
+        console.log(`[Install] Successfully installed ${version.full_name}`);
       } else {
         throw new Error(result.error);
       }
@@ -442,17 +523,6 @@ function App() {
     }
   }
 
-  const filteredPackages = packages.filter(pkg =>
-    pkg.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    pkg.full_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    pkg.owner.toLowerCase().includes(searchQuery.toLowerCase())
-  )
-
-  const filteredCommunities = communities.filter(c =>
-    c.name.toLowerCase().includes(gameSearchQuery.toLowerCase()) ||
-    c.identifier.toLowerCase().includes(gameSearchQuery.toLowerCase())
-  )
-
   // VIEW LOGIC
   let content;
 
@@ -493,6 +563,8 @@ function App() {
                 selectedCommunity={selectedCommunity}
                 onSelect={setSelectedCommunity}
                 communityImages={communityImages}
+                favoriteGames={favoriteGames}
+                onToggleFavorite={toggleFavorite}
               />
             </div>
           )}
@@ -550,10 +622,33 @@ function App() {
             await removeMod(activeProfile.id, mod.uuid4);
           }
         }}
+        onResolvePackage={async (mod) => {
+          // Extract mod name from fullName (format: "Author-ModName-Version")
+          // We need "Author-ModName" (or just "ModName" depending on API) 
+          // fetchPackageByName expects "Author-ModName" or exact match with full_name
+
+          let searchName = mod.fullName;
+          // Try to strip version if present (simple regex for -X.X.X at end)
+          searchName = searchName.replace(/-\d+\.\d+\.\d+$/, '');
+
+          console.log("Resolving package for:", mod.fullName, "searching:", searchName);
+          return await window.ipcRenderer.fetchPackageByName(searchName, selectedCommunity);
+        }}
         onInstallToGame={async () => {
           try {
             if (!activeProfile || !currentCommunity) return;
-            await window.ipcRenderer.installToGame(currentCommunity.identifier, activeProfile.id);
+
+            // Get list of disabled mod names for filtering
+            const disabledMods = activeProfile.mods
+              .filter(m => !m.enabled)
+              .map(m => {
+                // Extract mod name from fullName (format: "Author-ModName-Version")
+                const parts = m.fullName.split('-');
+                return parts.length >= 2 ? parts[1].toLowerCase() : m.fullName.toLowerCase();
+              });
+
+            console.log('Installing with disabled mods:', disabledMods);
+            await window.ipcRenderer.installToGame(currentCommunity.identifier, activeProfile.id, disabledMods);
             await window.ipcRenderer.alert('Success', 'Mods successfully installed to game directory!');
             setShowCrossOverGuide(true);
           } catch (e: any) {
@@ -587,7 +682,7 @@ function App() {
             </div>
           ) : (
             <VirtualizedModGrid
-              packages={filteredPackages}
+              packages={packages}
               installedMods={activeProfile?.mods || []}
               onInstall={handleInstallMod}
               onUninstall={async (pkg) => {
@@ -676,6 +771,7 @@ function App() {
       <SettingsModal
         isOpen={showSettings}
         onClose={() => setShowSettings(false)}
+        selectedGame={selectedCommunity || undefined}
       />
 
       <ExportModal
@@ -686,8 +782,9 @@ function App() {
       />
 
       <CrossOverGuideModal
-        isOpen={showCrossOverGuide}
+        isOpen={showCrossOverGuide && !hideCrossOverGuide}
         onClose={() => setShowCrossOverGuide(false)}
+        onDontShowAgain={(hide) => setHideCrossOverGuide(hide)}
       />
     </div>
   )

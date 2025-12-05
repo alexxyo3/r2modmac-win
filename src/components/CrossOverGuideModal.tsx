@@ -1,12 +1,22 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 interface CrossOverGuideModalProps {
     isOpen: boolean;
     onClose: () => void;
+    onDontShowAgain?: (dontShow: boolean) => void;
 }
 
-export const CrossOverGuideModal: React.FC<CrossOverGuideModalProps> = ({ isOpen, onClose }) => {
+export const CrossOverGuideModal: React.FC<CrossOverGuideModalProps> = ({ isOpen, onClose, onDontShowAgain }) => {
+    const [dontShowAgain, setDontShowAgain] = useState(false);
+
     if (!isOpen) return null;
+
+    const handleClose = () => {
+        if (dontShowAgain && onDontShowAgain) {
+            onDontShowAgain(true);
+        }
+        onClose();
+    };
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
@@ -19,7 +29,7 @@ export const CrossOverGuideModal: React.FC<CrossOverGuideModalProps> = ({ isOpen
                         CrossOver Configuration Required
                     </h2>
                     <button
-                        onClick={onClose}
+                        onClick={handleClose}
                         className="text-gray-400 hover:text-white transition-colors p-1 rounded-lg hover:bg-gray-800"
                     >
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -66,9 +76,18 @@ export const CrossOverGuideModal: React.FC<CrossOverGuideModalProps> = ({ isOpen
                 </div>
 
                 {/* Footer */}
-                <div className="p-5 border-t border-gray-800 bg-gray-900/50 flex justify-end">
+                <div className="p-5 border-t border-gray-800 bg-gray-900/50 flex items-center justify-between">
+                    <label className="flex items-center gap-2 text-sm text-gray-400 hover:text-gray-300 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            checked={dontShowAgain}
+                            onChange={(e) => setDontShowAgain(e.target.checked)}
+                            className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
+                        />
+                        <span>Don't show again</span>
+                    </label>
                     <button
-                        onClick={onClose}
+                        onClick={handleClose}
                         className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors shadow-lg shadow-blue-900/20"
                     >
                         Done

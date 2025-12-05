@@ -43,12 +43,16 @@ export const tauriAPI: IElectronAPI = {
             throw e;
         }
     },
-    deleteProfileFolder: async (profileId) => invoke<boolean>('delete_profile_folder', { profileId }),
+    deleteProfileFolder: async (profileId, gameIdentifier?) => invoke<boolean>('delete_profile_folder', { profileId, gameIdentifier }),
     getSettings: async () => invoke('get_settings'),
     saveSettings: async (settings) => invoke('save_settings', { settings }),
     getGamePath: async (gameIdentifier) => invoke('get_game_path', { gameIdentifier }),
+    openGameFolder: async (gameIdentifier) => invoke('open_game_folder', { gameIdentifier }),
     removeMod: async (profileId: string, modName: string) => {
         await invoke('remove_mod', { profileId, modName });
+    },
+    toggleMod: async (profileId: string, modName: string, enabled: boolean, gameIdentifier?: string) => {
+        await invoke('toggle_mod', { profileId, modName, enabled, gameIdentifier });
     },
     confirm: async (title: string, message: string) => {
         return await invoke('confirm_dialog', { title, message });
@@ -59,8 +63,8 @@ export const tauriAPI: IElectronAPI = {
     readImage: async (path: string) => {
         return await invoke('read_image', { path });
     },
-    installToGame: async (gameIdentifier: string, profileId: string) => {
-        console.log('Installing profile to game:', { gameIdentifier, profileId });
-        return await invoke('install_to_game', { gameIdentifier, profileId });
+    installToGame: async (gameIdentifier: string, profileId: string, disabledMods: string[]) => {
+        console.log('Installing profile to game:', { gameIdentifier, profileId, disabledMods });
+        return await invoke('install_to_game', { gameIdentifier, profileId, disabledMods });
     }
 };

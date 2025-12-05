@@ -108,6 +108,8 @@ struct AppState {
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 struct Settings {
     steam_path: Option<String>,
+    #[serde(default)]
+    favorite_games: Vec<String>,
 }
 
 impl Settings {
@@ -117,6 +119,7 @@ impl Settings {
         let steam_path = home.join("Library/Application Support/Steam");
         Self {
             steam_path: if steam_path.exists() { Some(steam_path.to_string_lossy().to_string()) } else { None },
+            favorite_games: Vec::new(),
         }
     }
 }
@@ -210,6 +213,40 @@ async fn get_game_path(app: AppHandle, game_identifier: String) -> Result<Option
 }
 
 #[command]
+async fn open_game_folder(app: AppHandle, game_identifier: String) -> Result<(), String> {
+    let settings = load_settings_impl(&app);
+    
+    if let Some(steam_path_str) = settings.steam_path {
+        let steam_path = std::path::Path::new(&steam_path_str);
+        
+        for lib_folder in get_steam_library_folders(steam_path) {
+            let common = lib_folder.join("steamapps").join("common");
+            if !common.exists() {
+                continue;
+            }
+            
+            if let Ok(entries) = fs::read_dir(&common) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        let folder_name = entry.file_name().to_string_lossy().to_string();
+                        if folder_name.to_lowercase().contains(&game_identifier.to_lowercase()) {
+                            let game_path = entry.path();
+                            let _ = open::that(&game_path);
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+        
+        return Err("Game directory not found".to_string());
+    }
+    
+    Err("Steam path not configured".to_string())
+}
+
+
+#[command]
 async fn find_game_executable(game_path: String) -> Result<Option<String>, String> {
     let path = std::path::Path::new(&game_path);
     
@@ -265,7 +302,7 @@ fn find_steam_app_id(steam_path: &std::path::Path, game_folder: &str) -> Option<
 }
 
 #[command]
-async fn install_to_game(app: AppHandle, game_identifier: String, profile_id: String) -> Result<(), String> {
+async fn install_to_game(app: AppHandle, game_identifier: String, profile_id: String, disabled_mods: Vec<String>) -> Result<(), String> {
     // 1. Find game path
     let game_path_str = get_game_path(app.clone(), game_identifier.clone()).await?
         .ok_or("Game not found in Steam library")?;
@@ -279,45 +316,88 @@ async fn install_to_game(app: AppHandle, game_identifier: String, profile_id: St
         return Err("Profile not found".to_string());
     }
 
+    eprintln!("[install_to_game] Disabled mods: {:?}", disabled_mods);
+
     // --- FIX BEPINEX STRUCTURE START ---
     // Always check for BepInExPack in plugins and ensure it's properly installed at root
     let plugins_dir = profile_dir.join("BepInEx").join("plugins");
     if plugins_dir.exists() {
-        // Find BepInExPack folder
-        let mut found_pack = None;
+        // Find BepInExPack folder - search for various naming patterns
+        let mut found_pack: Option<std::path::PathBuf> = None;
+        
         if let Ok(entries) = fs::read_dir(&plugins_dir) {
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
+                let folder_name = path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                
                 if path.is_dir() {
-                    // Check for BepInExPack/winhttp.dll inside
-                    // Structure: plugins/ModName/BepInExPack/winhttp.dll
+                    // Check if this folder contains BepInExPack files
+                    // Pattern 1: plugins/ModName/BepInExPack/winhttp.dll
                     let nested_pack = path.join("BepInExPack");
                     if nested_pack.join("winhttp.dll").exists() {
+                        eprintln!("[install_to_game] Found nested BepInExPack at {:?}", nested_pack);
                         found_pack = Some(nested_pack);
                         break;
+                    }
+                    
+                    // Pattern 2: plugins/BepInEx-BepInExPack_GAMENAME-X.X.X/winhttp.dll (direct)
+                    if folder_name.contains("bepinexpack") && path.join("winhttp.dll").exists() {
+                        eprintln!("[install_to_game] Found BepInExPack directly at {:?}", path);
+                        found_pack = Some(path.clone());
+                        break;
+                    }
+                    
+                    // Pattern 3: Search subdirectories for BepInExPack_* folders
+                    if let Ok(sub_entries) = fs::read_dir(&path) {
+                        for sub_entry in sub_entries.filter_map(|e| e.ok()) {
+                            let sub_path = sub_entry.path();
+                            let sub_name = sub_path.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("")
+                                .to_lowercase();
+                            
+                            // Match BepInExPack or BepInExPack_GAMENAME
+                            if sub_path.is_dir() && sub_name.starts_with("bepinexpack") {
+                                if sub_path.join("winhttp.dll").exists() {
+                                    eprintln!("[install_to_game] Found game-specific BepInExPack at {:?}", sub_path);
+                                    found_pack = Some(sub_path);
+                                    break;
+                                }
+                            }
+                        }
+                        if found_pack.is_some() {
+                            break;
+                        }
                     }
                 }
             }
         }
 
         if let Some(pack_dir) = found_pack {
-            eprintln!("[install_to_game] Found BepInExPack at {:?}, verifying root installation...", pack_dir);
+            eprintln!("[install_to_game] Using BepInExPack from {:?}", pack_dir);
             
-            // 1. Ensure winhttp.dll is at root
-            if !profile_dir.join("winhttp.dll").exists() {
-                eprintln!("[install_to_game] Copying winhttp.dll to root");
-                fs::copy(pack_dir.join("winhttp.dll"), profile_dir.join("winhttp.dll"))
+            // 1. Ensure winhttp.dll is at profile root
+            let winhttp_src = pack_dir.join("winhttp.dll");
+            let winhttp_dst = profile_dir.join("winhttp.dll");
+            if winhttp_src.exists() && !winhttp_dst.exists() {
+                eprintln!("[install_to_game] Copying winhttp.dll to profile root");
+                fs::copy(&winhttp_src, &winhttp_dst)
                     .map_err(|e| format!("Failed to copy winhttp.dll: {}", e))?;
             }
             
-            // 2. Ensure doorstop_config.ini is at root
-            if pack_dir.join("doorstop_config.ini").exists() && !profile_dir.join("doorstop_config.ini").exists() {
-                eprintln!("[install_to_game] Copying doorstop_config.ini to root");
-                fs::copy(pack_dir.join("doorstop_config.ini"), profile_dir.join("doorstop_config.ini"))
+            // 2. Ensure doorstop_config.ini is at profile root
+            let doorstop_src = pack_dir.join("doorstop_config.ini");
+            let doorstop_dst = profile_dir.join("doorstop_config.ini");
+            if doorstop_src.exists() && !doorstop_dst.exists() {
+                eprintln!("[install_to_game] Copying doorstop_config.ini to profile root");
+                fs::copy(&doorstop_src, &doorstop_dst)
                     .map_err(|e| format!("Failed to copy doorstop_config.ini: {}", e))?;
             }
 
-            // 3. Merge BepInEx/core and BepInEx/config
+            // 3. Merge BepInEx core/config from the pack (if present)
             let pack_bepinex = pack_dir.join("BepInEx");
             if pack_bepinex.exists() {
                 eprintln!("[install_to_game] Merging BepInEx core/config from pack...");
@@ -325,41 +405,158 @@ async fn install_to_game(app: AppHandle, game_identifier: String, profile_id: St
                 copy_dir_recursive(&pack_bepinex, &target_bepinex)
                     .map_err(|e| format!("Failed to merge BepInEx folder: {}", e))?;
             }
+        } else {
+            eprintln!("[install_to_game] Warning: No BepInExPack found in plugins!");
         }
     }
     // --- FIX BEPINEX STRUCTURE END ---
 
     eprintln!("[install_to_game] Installing profile {} to game {}", profile_id, game_path.display());
 
-    // 3. Copy files (BepInEx, doorstop_config.ini, winhttp.dll)
-    let files_to_copy = ["BepInEx", "doorstop_config.ini", "winhttp.dll"];
+    // --- SYNC: Remove mods from game that are not in profile OR are disabled ---
+    let profile_plugins = profile_dir.join("BepInEx").join("plugins");
+    let game_plugins = game_path.join("BepInEx").join("plugins");
     
-    for item_name in files_to_copy.iter() {
+    // Create set of enabled mod names (lowercase for comparison)
+    let disabled_set: std::collections::HashSet<String> = disabled_mods.iter()
+        .map(|s| s.to_lowercase())
+        .collect();
+    
+    if profile_plugins.exists() && game_plugins.exists() {
+        // Get list of ENABLED mod folders in profile
+        let enabled_profile_mods: std::collections::HashSet<String> = fs::read_dir(&profile_plugins)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                    .filter_map(|e| {
+                        let name = e.file_name().to_str().map(|s| s.to_string())?;
+                        // Check if this mod is disabled
+                        let is_disabled = disabled_set.iter().any(|d| name.to_lowercase().contains(d));
+                        if is_disabled {
+                            eprintln!("[install_to_game] Skipping disabled mod in profile: {}", name);
+                            None
+                        } else {
+                            Some(name)
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        
+        // Check game plugins and remove those not in profile OR disabled
+        if let Ok(game_entries) = fs::read_dir(&game_plugins) {
+            for entry in game_entries.filter_map(|e| e.ok()) {
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    let folder_name = entry.file_name().to_string_lossy().to_string();
+                    
+                    // Check if mod is disabled or not in enabled list
+                    let is_disabled = disabled_set.iter().any(|d| folder_name.to_lowercase().contains(d));
+                    let not_in_profile = !enabled_profile_mods.contains(&folder_name);
+                    
+                    if is_disabled || not_in_profile {
+                        eprintln!("[install_to_game] Removing mod from game (disabled={}, orphan={}): {}", 
+                                  is_disabled, not_in_profile, folder_name);
+                        let _ = fs::remove_dir_all(entry.path());
+                    }
+                }
+            }
+        }
+    }
+    // --- END SYNC ---
+
+    // 3. Copy BepInEx structure with filtering for disabled mods
+    let source_bepinex = profile_dir.join("BepInEx");
+    let dest_bepinex = game_path.join("BepInEx");
+    
+    if source_bepinex.exists() {
+        // Create BepInEx dir if needed
+        if !dest_bepinex.exists() {
+            fs::create_dir_all(&dest_bepinex).map_err(|e| e.to_string())?;
+        }
+        
+        // Copy everything except plugins (we'll handle that specially)
+        if let Ok(entries) = fs::read_dir(&source_bepinex) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let src_path = entry.path();
+                let dst_path = dest_bepinex.join(&name);
+                
+                if name == "plugins" {
+                    // Handle plugins specially - only copy enabled mods
+                    if !dst_path.exists() {
+                        fs::create_dir_all(&dst_path).map_err(|e| e.to_string())?;
+                    }
+                    
+                    if let Ok(plugin_entries) = fs::read_dir(&src_path) {
+                        for plugin_entry in plugin_entries.filter_map(|e| e.ok()) {
+                            let plugin_name = plugin_entry.file_name().to_string_lossy().to_string();
+                            
+                            // Check if this plugin is disabled
+                            let is_disabled = disabled_set.iter().any(|d| plugin_name.to_lowercase().contains(d));
+                            
+                            if is_disabled {
+                                eprintln!("[install_to_game] Skipping disabled plugin: {}", plugin_name);
+                                continue;
+                            }
+                            
+                            let plugin_dst = dst_path.join(&plugin_name);
+                            if plugin_entry.path().is_dir() {
+                                copy_dir_recursive(&plugin_entry.path(), &plugin_dst)
+                                    .map_err(|e| format!("Failed to copy plugin {}: {}", plugin_name, e))?;
+                            } else {
+                                if plugin_dst.exists() {
+                                    let _ = fs::remove_file(&plugin_dst);
+                                }
+                                fs::copy(&plugin_entry.path(), &plugin_dst)
+                                    .map_err(|e| format!("Failed to copy plugin file {}: {}", plugin_name, e))?;
+                            }
+                        }
+                    }
+                } else {
+                    // Copy other BepInEx folders normally
+                    if src_path.is_dir() {
+                        copy_dir_recursive(&src_path, &dst_path)
+                            .map_err(|e| format!("Failed to copy {}: {}", name, e))?;
+                    } else {
+                        if dst_path.exists() {
+                            let _ = fs::remove_file(&dst_path);
+                        }
+                        fs::copy(&src_path, &dst_path)
+                            .map_err(|e| format!("Failed to copy {}: {}", name, e))?;
+                    }
+                }
+            }
+        }
+        eprintln!("[install_to_game] Synced BepInEx to game folder");
+    }
+
+    // 4. Copy root files (doorstop_config.ini, winhttp.dll)
+    for item_name in ["doorstop_config.ini", "winhttp.dll"].iter() {
         let source = profile_dir.join(item_name);
         let dest = game_path.join(item_name);
         
         if source.exists() {
-            if source.is_dir() {
-                // Recursive copy for directories (like BepInEx)
-                copy_dir_recursive(&source, &dest).map_err(|e| format!("Failed to copy {}: {}", item_name, e))?;
-            } else {
-                // File copy
-                fs::copy(&source, &dest).map_err(|e| format!("Failed to copy {}: {}", item_name, e))?;
+            if dest.exists() {
+                let _ = fs::remove_file(&dest);
             }
-            eprintln!("[install_to_game] Copied {} to game folder", item_name);
-        } else {
-            eprintln!("[install_to_game] Warning: {} not found in profile, skipping", item_name);
+            fs::copy(&source, &dest).map_err(|e| format!("Failed to copy {}: {}", item_name, e))?;
+            eprintln!("[install_to_game] Synced {} to game folder", item_name);
         }
     }
 
+    eprintln!("[install_to_game] Sync complete!");
     Ok(())
 }
 
-// Helper function for recursive directory copy
+// Helper function for recursive directory copy with forced overwrite
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
     if !dst.exists() {
         fs::create_dir_all(dst)?;
     }
+    
+    let mut files_copied = 0;
+    let mut dirs_created = 0;
     
     for entry in fs::read_dir(src)? {
         let entry = entry?;
@@ -367,11 +564,50 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
         let dest_path = dst.join(entry.file_name());
         
         if file_type.is_dir() {
+            if !dest_path.exists() {
+                fs::create_dir_all(&dest_path)?;
+                dirs_created += 1;
+            }
             copy_dir_recursive(&entry.path(), &dest_path)?;
         } else {
-            fs::copy(&entry.path(), &dest_path)?;
+            // Check if file exists and has same size to skip copy
+            let should_copy = if dest_path.exists() {
+                if let (Ok(src_meta), Ok(dst_meta)) = (fs::metadata(entry.path()), fs::metadata(&dest_path)) {
+                    // Start with size check - simple and fast
+                    if src_meta.len() != dst_meta.len() {
+                        true
+                    } else {
+                        // If size is same, check modification time?
+                        // For now, size is a good enough heuristic for mod files (DLLs usually don't change without size change)
+                        // And we want speed.
+                        // eprintln!("[copy_dir_recursive] Skipping identical file: {:?}", entry.file_name());
+                        false
+                    }
+                } else {
+                    true
+                }
+            } else {
+                true
+            };
+
+            if should_copy {
+                // Remove first if exists to avoid permission issues
+                if dest_path.exists() {
+                    let _ = fs::remove_file(&dest_path);
+                }
+                fs::copy(&entry.path(), &dest_path)?;
+                files_copied += 1;
+            }
         }
     }
+    
+    if files_copied > 0 || dirs_created > 0 {
+        eprintln!("[copy_dir_recursive] {:?} -> {:?}: {} files, {} dirs", 
+            src.file_name().unwrap_or_default(), 
+            dst.file_name().unwrap_or_default(), 
+            files_copied, dirs_created);
+    }
+    
     Ok(())
 }
 
@@ -404,12 +640,14 @@ pub fn run() {
             fetch_package_by_name,
             delete_profile_folder,
             remove_mod,
+            toggle_mod,
             check_directory_exists,
             export_profile,
             share_profile,
             get_settings,
             save_settings,
             get_game_path,
+            open_game_folder,
             install_to_game,
             confirm_dialog,
             alert_dialog,
@@ -1013,15 +1251,104 @@ fn process_zip_archive(mut archive: zip::ZipArchive<std::io::Cursor<Vec<u8>>>) -
 }
 
 #[command]
-async fn delete_profile_folder(app: AppHandle, profile_id: String) -> Result<bool, String> {
+async fn delete_profile_folder(app: AppHandle, profile_id: String, game_identifier: Option<String>) -> Result<bool, String> {
     let profile_dir = app.path().app_data_dir().unwrap().join("profiles").join(&profile_id);
     
+    // If game_identifier is provided, clean up ALL BepInEx-related files from the game folder
+    if let Some(game_id) = game_identifier {
+        if let Ok(Some(game_path_str)) = get_game_path(app.clone(), game_id).await {
+            let game_path = std::path::Path::new(&game_path_str);
+            
+            // Remove BepInEx folder
+            let bepinex_path = game_path.join("BepInEx");
+            if bepinex_path.exists() {
+                eprintln!("[delete_profile] Removing BepInEx folder from game");
+                let _ = fs::remove_dir_all(&bepinex_path);
+            }
+            
+            // Remove winhttp.dll
+            let winhttp_path = game_path.join("winhttp.dll");
+            if winhttp_path.exists() {
+                eprintln!("[delete_profile] Removing winhttp.dll from game");
+                let _ = fs::remove_file(&winhttp_path);
+            }
+            
+            // Remove doorstop_config.ini
+            let doorstop_path = game_path.join("doorstop_config.ini");
+            if doorstop_path.exists() {
+                eprintln!("[delete_profile] Removing doorstop_config.ini from game");
+                let _ = fs::remove_file(&doorstop_path);
+            }
+            
+            eprintln!("[delete_profile] Cleaned up game folder: {}", game_path.display());
+        }
+    }
+    
+    // Delete the profile folder
     if profile_dir.exists() {
         fs::remove_dir_all(profile_dir).map_err(|e| e.to_string())?;
         Ok(true)
     } else {
         Ok(false)
     }
+}
+
+#[command]
+async fn toggle_mod(app: AppHandle, profile_id: String, mod_name: String, enabled: bool, game_identifier: Option<String>) -> Result<(), String> {
+    let profile_dir = app.path().app_data_dir().unwrap().join("profiles").join(&profile_id);
+    let plugins_dir = profile_dir.join("BepInEx").join("plugins");
+    
+    // Get game path for live sync
+    let game_plugins = if let Some(ref game_id) = game_identifier {
+        if let Ok(Some(game_path_str)) = get_game_path(app.clone(), game_id.clone()).await {
+            Some(std::path::Path::new(&game_path_str).join("BepInEx").join("plugins"))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    
+    // Find the mod folder
+    if let Ok(entries) = fs::read_dir(&plugins_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let folder_name = path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            
+            // Match mod folder by name (case insensitive, partial match)
+            if folder_name.to_lowercase().contains(&mod_name.to_lowercase()) && path.is_dir() {
+                eprintln!("[toggle_mod] Found mod folder: {:?}, enabled: {}", path, enabled);
+                
+                // Sync to game folder if available
+                if let Some(ref game_plugins_path) = game_plugins {
+                    let game_mod_path = game_plugins_path.join(folder_name);
+                    
+                    if enabled {
+                        // Copy mod to game folder
+                        eprintln!("[toggle_mod] Syncing enabled mod to game: {}", folder_name);
+                        if game_mod_path.exists() {
+                            let _ = fs::remove_dir_all(&game_mod_path);
+                        }
+                        copy_dir_recursive(&path, &game_mod_path)
+                            .map_err(|e| format!("Failed to sync mod to game: {}", e))?;
+                    } else {
+                        // Remove mod from game folder
+                        if game_mod_path.exists() {
+                            eprintln!("[toggle_mod] Removing disabled mod from game: {}", folder_name);
+                            fs::remove_dir_all(&game_mod_path)
+                                .map_err(|e| format!("Failed to remove mod from game: {}", e))?;
+                        }
+                    }
+                }
+                
+                return Ok(());
+            }
+        }
+    }
+    
+    Err(format!("Mod '{}' not found in profile", mod_name))
 }
 
 #[command]

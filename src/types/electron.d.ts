@@ -19,15 +19,17 @@ export interface IElectronAPI {
     shareProfile: (profileId: string) => Promise<string>;
     openModFolder: (profileId: string, modName: string) => Promise<void>;
     exportProfile: (profileId: string) => Promise<any>;
-    deleteProfileFolder: (profileId: string) => Promise<boolean>;
-    getSettings: () => Promise<{ steam_path: string | null }>;
-    saveSettings: (settings: { steam_path: string | null }) => Promise<void>;
+    deleteProfileFolder: (profileId: string, gameIdentifier?: string) => Promise<boolean>;
+    getSettings: () => Promise<{ steam_path: string | null; favorite_games: string[] }>;
+    saveSettings: (settings: { steam_path: string | null; favorite_games: string[] }) => Promise<void>;
     getGamePath: (gameIdentifier: string) => Promise<string | null>;
+    openGameFolder: (gameIdentifier: string) => Promise<void>;
     removeMod: (profileId: string, modName: string) => Promise<void>;
+    toggleMod: (profileId: string, modName: string, enabled: boolean, gameIdentifier?: string) => Promise<void>;
     confirm: (title: string, message: string) => Promise<boolean>;
     alert: (title: string, message: string) => Promise<void>;
     readImage: (path: string) => Promise<string | null>;
-    installToGame: (gameIdentifier: string, profileId: string) => Promise<void>;
+    installToGame: (gameIdentifier: string, profileId: string, disabledMods: string[]) => Promise<void>;
 }
 
 declare global {

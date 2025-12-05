@@ -8,12 +8,12 @@ interface ProfileState {
     // Actions
     createProfile: (name: string, gameIdentifier: string) => string;
     selectProfile: (profileId: string) => void;
-    deleteProfile: (profileId: string) => Promise<void>;
+    deleteProfile: (profileId: string, gameIdentifier?: string) => Promise<void>;
     updateProfile: (profileId: string, updates: Partial<Profile>) => void;
     setProfiles: (profiles: Profile[]) => void;
     addMod: (profileId: string, mod: InstalledMod) => void;
     removeMod: (profileId: string, modId: string) => Promise<void>;
-    toggleMod: (profileId: string, modId: string) => void;
+    toggleMod: (profileId: string, modId: string) => Promise<void>;
     loadProfiles: () => Promise<void>;
 }
 
@@ -45,11 +45,11 @@ export const useProfileStore = create<ProfileState>((set) => ({
 
     selectProfile: (profileId) => set({ activeProfileId: profileId }),
 
-    deleteProfile: async (profileId) => {
+    deleteProfile: async (profileId, gameIdentifier?) => {
         // First delete from disk, THEN update state
         // This ensures if there's an error, we don't lose state
         try {
-            await window.ipcRenderer.deleteProfileFolder(profileId);
+            await window.ipcRenderer.deleteProfileFolder(profileId, gameIdentifier);
         } catch (e) {
             console.error("Failed to delete profile folder:", e);
             // Continue anyway to clean up state
@@ -134,27 +134,48 @@ export const useProfileStore = create<ProfileState>((set) => ({
         });
     },
 
-    toggleMod: (profileId, modId) => {
-        set((state) => {
-            const profileIndex = state.profiles.findIndex(p => p.id === profileId);
-            if (profileIndex === -1) return state;
+    toggleMod: async (profileId, modId) => {
+        // Get current state to find the mod
+        const state = useProfileStore.getState();
+        const profile = state.profiles.find(p => p.id === profileId);
+        if (!profile) return;
 
-            const updatedProfiles = [...state.profiles];
-            const profile = { ...updatedProfiles[profileIndex] };
+        const mod = profile.mods.find(m => m.uuid4 === modId);
+        if (!mod) return;
 
-            // Create a new array for mods to ensure immutability
-            profile.mods = profile.mods.map(m => {
-                if (m.uuid4 === modId) {
-                    return { ...m, enabled: !m.enabled };
-                }
-                return m;
+        const newEnabled = !mod.enabled;
+
+        // Extract mod name from fullName (format: "Author-ModName-Version")
+        const parts = mod.fullName.split('-');
+        const modName = parts.length >= 2 ? parts[1] : mod.fullName;
+
+        try {
+            // Call backend to actually rename the DLL files and sync to game if applicable
+            await window.ipcRenderer.toggleMod(profileId, modName, newEnabled, profile.gameIdentifier);
+
+            // Update store state after successful backend call
+            set((state) => {
+                const profileIndex = state.profiles.findIndex(p => p.id === profileId);
+                if (profileIndex === -1) return state;
+
+                const updatedProfiles = [...state.profiles];
+                const profile = { ...updatedProfiles[profileIndex] };
+
+                profile.mods = profile.mods.map(m => {
+                    if (m.uuid4 === modId) {
+                        return { ...m, enabled: newEnabled };
+                    }
+                    return m;
+                });
+
+                updatedProfiles[profileIndex] = profile;
+                window.ipcRenderer.saveProfiles(updatedProfiles);
+
+                return { profiles: updatedProfiles };
             });
-
-            updatedProfiles[profileIndex] = profile;
-            window.ipcRenderer.saveProfiles(updatedProfiles);
-
-            return { profiles: updatedProfiles };
-        });
+        } catch (e) {
+            console.error('Failed to toggle mod:', e);
+        }
     },
 
     loadProfiles: async () => {

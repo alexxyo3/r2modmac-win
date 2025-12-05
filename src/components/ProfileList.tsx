@@ -9,7 +9,7 @@ interface ProfileListProps {
     onCreateProfile: (name: string) => void;
     onImportProfile: (code: string) => void;
     onImportFile: (path: string) => void;
-    onDeleteProfile: (profileId: string) => void;
+    onDeleteProfile: (profileId: string, gameIdentifier?: string) => void;
     onUpdateProfile: (profileId: string, updates: Partial<Profile>) => void;
 }
 
@@ -162,7 +162,7 @@ export function ProfileList({
                                         e.stopPropagation();
                                         const confirmed = await window.ipcRenderer.confirm('Delete Profile', 'Are you sure you want to delete this profile?');
                                         if (confirmed) {
-                                            await onDeleteProfile(profile.id);
+                                            await onDeleteProfile(profile.id, selectedGameIdentifier);
                                         }
                                     }}
                                     className="w-8 h-8 bg-red-500/20 hover:bg-red-500 text-red-500 hover:text-white rounded-full flex items-center justify-center transition-colors"
