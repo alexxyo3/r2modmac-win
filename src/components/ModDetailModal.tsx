@@ -42,10 +42,10 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
 
     const fetchDependencies = async () => {
         try {
-            const deps = await window.ipcRenderer.lookupPackagesByNames(gameId, mod.dependencies);
-            if (Array.isArray(deps)) {
-                // The backend returns Value which might be array of packages
-                setDependencies(deps);
+            const result = await window.ipcRenderer.lookupPackagesByNames(gameId, mod.dependencies);
+            // Backend returns { found: Package[], unknown: string[] }
+            if (result && Array.isArray(result.found)) {
+                setDependencies(result.found);
             }
         } catch (e) {
             console.error("Failed to fetch dependencies", e);
@@ -189,8 +189,8 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
                             key={tab}
                             onClick={() => setActiveTab(tab)}
                             className={`py-3 text-sm font-medium border-b-2 transition-colors capitalize ${activeTab === tab
-                                    ? 'text-blue-400 border-blue-400'
-                                    : 'text-gray-400 border-transparent hover:text-gray-200'
+                                ? 'text-blue-400 border-blue-400'
+                                : 'text-gray-400 border-transparent hover:text-gray-200'
                                 }`}
                         >
                             {tab}
@@ -277,7 +277,12 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
                                                     )}
                                                 </div>
                                                 <div>
-                                                    <p className="text-white font-medium text-sm">{dep.name}</p>
+                                                    <div className="flex items-center gap-2">
+                                                        <p className="text-white font-medium text-sm">{dep.name}</p>
+                                                        <span className="bg-gray-700 px-1.5 py-0.5 rounded text-gray-400 text-xs">
+                                                            v{dep.versions[0]?.version_number}
+                                                        </span>
+                                                    </div>
                                                     <p className="text-gray-500 text-xs truncate max-w-[300px]">{dep.versions[0]?.description}</p>
                                                 </div>
                                             </div>
