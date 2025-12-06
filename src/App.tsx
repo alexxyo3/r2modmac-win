@@ -660,7 +660,7 @@ function App() {
 
             console.log('Installing with disabled mods:', disabledMods);
             await window.ipcRenderer.installToGame(currentCommunity.identifier, activeProfile.id, disabledMods);
-            await window.ipcRenderer.alert('Success', 'Mods successfully installed to game directory!');
+            await window.ipcRenderer.alert('Success', 'Mods applied! Launch the game via Steam to play.');
             setShowCrossOverGuide(true);
           } catch (e: any) {
             alert('Error installing modpack: ' + e);

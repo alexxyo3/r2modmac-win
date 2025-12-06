@@ -62,6 +62,7 @@ export const CrossOverGuideModal: React.FC<CrossOverGuideModalProps> = ({ isOpen
                             <li>In "New override for library", type or select <strong>winhttp</strong></li>
                             <li>Click <strong>"Add"</strong></li>
                             <li>Click <strong>"Apply"</strong> and then "OK"</li>
+                            <li className="text-white font-bold bg-blue-900/30 px-2 py-0.5 rounded mt-2 border border-blue-500/30">Finally, launch the game via Steam!</li>
                         </ol>
                     </div>
 
