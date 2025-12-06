@@ -1043,7 +1043,12 @@ async fn fetch_packages(app: AppHandle, state: tauri::State<'_, AppState>, game_
         if cache_file.exists() {
             if let Ok(file) = fs::File::open(&cache_file) {
                 let reader = std::io::BufReader::new(file);
-                if let Ok(packages) = serde_json::from_reader::<_, Vec<serde_json::Value>>(reader) {
+                if let Ok(mut packages) = serde_json::from_reader::<_, Vec<serde_json::Value>>(reader) {
+                    // Filter out Manager packages from cache too
+                    packages.retain(|pkg| {
+                        let full_name = pkg["full_name"].as_str().unwrap_or("");
+                        !full_name.contains("ebkr-r2modman") && !full_name.contains("Tslat-ThunderstoreModManager")
+                    });
                     return Ok(packages);
                 }
             }
@@ -1057,7 +1062,13 @@ async fn fetch_packages(app: AppHandle, state: tauri::State<'_, AppState>, game_
         std::io::Read::read_to_string(&mut gz, &mut json_str).map_err(|e| e.to_string())?;
         
         // Parse
-        let packages: Vec<serde_json::Value> = serde_json::from_str(&json_str).map_err(|e| e.to_string())?;
+        let mut packages: Vec<serde_json::Value> = serde_json::from_str(&json_str).map_err(|e| e.to_string())?;
+        
+        // Filter out Manager packages (e.g. r2modman, Thunderstore Mod Manager) if they appear
+        packages.retain(|pkg| {
+            let full_name = pkg["full_name"].as_str().unwrap_or("");
+            !full_name.contains("ebkr-r2modman") && !full_name.contains("Tslat-ThunderstoreModManager")
+        });
         
         // Save to cache
         if let Ok(file) = fs::File::create(&cache_file) {
