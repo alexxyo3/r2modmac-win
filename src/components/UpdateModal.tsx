@@ -10,43 +10,60 @@ interface UpdateModalProps {
 }
 
 export const UpdateModal: React.FC<UpdateModalProps> = ({ updateInfo, onClose, onUpdate }) => {
-    // Parse markdown notes
     const getHtml = () => {
-        const raw = marked.parse(updateInfo.notes) as string;
+        const raw = marked.parse(updateInfo.notes, { breaks: true, gfm: true }) as string;
         return { __html: DOMPurify.sanitize(raw) };
     };
 
     return (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
-            <div className="bg-gray-800 rounded-lg max-w-2xl w-full border border-green-500/50 shadow-2xl flex flex-col max-h-[80vh]">
-                <div className="p-6 border-b border-gray-700 bg-gray-900/50">
-                    <h2 className="text-2xl font-bold text-white flex items-center gap-2">
-                        <span className="text-green-400">🚀</span>
-                        New Update Available!
-                        <span className="ml-2 text-sm bg-green-500/20 text-green-400 px-2 py-1 rounded">
-                            {updateInfo.version}
-                        </span>
-                    </h2>
-                </div>
-
-                <div className="p-6 overflow-y-auto flex-1 custom-scrollbar">
-                    <div className="prose prose-invert max-w-none">
-                        <div dangerouslySetInnerHTML={getHtml()} />
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-3">
+            <div className="bg-gray-800 rounded-xl max-w-xl w-full border border-gray-700 shadow-2xl flex flex-col" style={{ maxHeight: 'calc(100vh - 48px)' }}>
+                {/* Compact Header */}
+                <div className="flex-shrink-0 p-4 border-b border-gray-700 bg-gradient-to-br from-gray-900 to-gray-800 rounded-t-xl">
+                    <div className="flex items-center gap-3">
+                        <img
+                            src="/app-icon.png"
+                            alt="r2modmac"
+                            className="w-10 h-10 flex-shrink-0 rounded-lg"
+                        />
+                        <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <h2 className="text-lg font-bold text-white">Update Available</h2>
+                                <span className="text-xs font-bold text-green-400 bg-green-400/10 px-2 py-0.5 rounded border border-green-400/20">
+                                    {updateInfo.version}
+                                </span>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
-                <div className="p-6 border-t border-gray-700 bg-gray-900/50 flex justify-end gap-3">
+                {/* Scrollable Content */}
+                <div className="flex-1 overflow-y-auto p-4" style={{ minHeight: 0 }}>
+                    <div
+                        className="prose prose-invert prose-sm max-w-none 
+                                   prose-headings:text-white prose-headings:text-base prose-headings:mt-3 prose-headings:mb-2
+                                   prose-p:my-1 prose-ul:my-1 prose-li:my-0.5
+                                   prose-a:text-green-400 hover:prose-a:text-green-300"
+                        dangerouslySetInnerHTML={getHtml()}
+                    />
+                </div>
+
+                {/* Compact Footer */}
+                <div className="flex-shrink-0 p-4 border-t border-gray-700 bg-gray-900/50 rounded-b-xl flex justify-end gap-2">
                     <button
                         onClick={onClose}
-                        className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+                        className="px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-700/50 transition-all"
                     >
-                        Remind Me Later
+                        Later
                     </button>
                     <button
                         onClick={onUpdate}
-                        className="px-6 py-2 bg-green-600 hover:bg-green-500 text-white rounded font-medium transition-colors shadow-lg shadow-green-900/20"
+                        className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg text-sm font-semibold transition-all flex items-center gap-1.5"
                     >
-                        Update Now
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                        Update
                     </button>
                 </div>
             </div>

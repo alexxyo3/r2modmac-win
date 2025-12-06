@@ -1866,47 +1866,86 @@ async fn install_update(app: AppHandle, download_url: String) -> Result<(), Stri
 
     // 2. Prepare Update Script
     let script_path = temp_dir.join("update.sh");
-    let needs_extract_command = if filename.ends_with(".tar.gz") {
-        format!("tar -xzf '{}' -C '{}'", file_path.to_string_lossy(), temp_dir.to_string_lossy())
+    
+    // GUARD: Check if we are in dev mode or not in a standard .app bundle
+    // If current_exe is inside "target/debug" or "target/release", we are likely in dev/build.
+    // Abort update to prevent deleting source code!
+    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_string = current_exe.to_string_lossy();
+    if exe_string.contains("/target/debug/") || exe_string.contains("/target/release/") {
+        eprintln!("Dev/Build environment detected. Skipping destructive update.");
+        return Err("Cannot auto-update in development environment. Build a release bundle to test.".to_string());
+    }
+
+    // Determine extraction/mount commands based on file type
+    let (extract_command, app_source) = if filename.ends_with(".tar.gz") {
+        (
+            format!("tar -xzf '{}' -C '{}'", file_path.to_string_lossy(), temp_dir.to_string_lossy()),
+            format!("{}/r2modmac.app", temp_dir.to_string_lossy())
+        )
     } else if filename.ends_with(".zip") {
-         format!("unzip -o '{}' -d '{}'", file_path.to_string_lossy(), temp_dir.to_string_lossy())
+        (
+            format!("unzip -o '{}' -d '{}'", file_path.to_string_lossy(), temp_dir.to_string_lossy()),
+            format!("{}/r2modmac.app", temp_dir.to_string_lossy())
+        )
     } else if filename.ends_with(".dmg") {
-         // DMG handling is complex (hdiutil attach), user might prefer standard zip for auto-update
-         // For now let's assume we distribute a .tar.gz or .zip of the .app
-         return Err("Auto-update currently supports .tar.gz or .zip distributions of r2modmac.app".to_string());
+        // DMG: mount readonly to private folder, copy app, unmount
+        // "Extracting with style": hdiutil attach ...
+        let mount_point = format!("{}/dmg_mount", temp_dir.to_string_lossy());
+        (
+            format!(
+                "mkdir -p '{}' && hdiutil attach '{}' -mountpoint '{}' -nobrowse -quiet -readonly",
+                mount_point, file_path.to_string_lossy(), mount_point
+            ),
+            format!("{}/r2modmac.app", mount_point)
+        )
     } else {
-         return Err("Unknown update format".to_string());
+        return Err("Unknown update format".to_string());
     };
 
-    let app_name = "r2modmac.app";
-    let target_app_path = "/Applications/r2modmac.app"; 
-    // Note: This assumes standard installation path. 
-    // Better: std::env::current_exe() -> get .app bundle path
-    
-    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let is_dmg = filename.ends_with(".dmg");
+    let mount_point = format!("{}/dmg_mount", temp_dir.to_string_lossy());
+
     // Navigate up from Contents/MacOS/executable to .app
-    // bundle path usually ends in .app
+    // Bundle path usually ends in .app. 
+    // Guard ensured we are likely safe, but let's defaulting to /Applications just in case.
     let current_app_path = current_exe
         .parent().and_then(|p| p.parent()).and_then(|p| p.parent())
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or("/Applications/r2modmac.app".to_string());
 
+    // Build script with conditional DMG unmount
+    let unmount_command = if is_dmg {
+        format!("hdiutil detach '{}' -force -quiet || true", mount_point)
+    } else {
+        String::new()
+    };
+
+    // The script waits for PID, mounts/extracts, deletes OLD app, moves NEW app, launches NEW app, cleans up.
     let script = format!(
 r#"#!/bin/bash
 PID={}
 APP_PATH="{}"
 UPDATE_DIR="{}"
-NEW_APP_DIR="$UPDATE_DIR/{}"
+APP_SOURCE="{}"
 
 echo "Waiting for PID $PID to exit..."
 while kill -0 $PID 2>/dev/null; do sleep 0.5; done
 
-echo "Extracting..."
+echo "Extracting/Mounting Update..."
 {}
+
+if [ ! -d "$APP_SOURCE" ]; then
+    echo "Error: New app not found at $APP_SOURCE"
+    exit 1
+fi
 
 echo "Replacing app at $APP_PATH..."
 rm -rf "$APP_PATH"
-cp -R "$NEW_APP_DIR" "$APP_PATH"
+cp -R "$APP_SOURCE" "$APP_PATH"
+
+# Unmount if needed (DMG)
+{}
 
 echo "Launching new app..."
 open "$APP_PATH"
@@ -1917,8 +1956,9 @@ rm -rf "$UPDATE_DIR"
         std::process::id(),
         current_app_path,
         temp_dir.to_string_lossy(),
-        app_name,
-        needs_extract_command
+        app_source,
+        extract_command,
+        unmount_command
     );
 
     fs::write(&script_path, script).map_err(|e| e.to_string())?;
