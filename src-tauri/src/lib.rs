@@ -708,6 +708,81 @@ pub fn run() {
             check_update,
             install_update,
         ])
+        .setup(|app| {
+            use chrono::Datelike;
+            use tauri::menu::{MenuBuilder, SubmenuBuilder, MenuItemBuilder, PredefinedMenuItem};
+            let current_year = chrono::Local::now().year();
+            let copyright_text = format!("Copyright © {} Zard Studios", current_year);
+
+            // Create Help menu items
+            let report_issue = MenuItemBuilder::with_id("report_issue", "Report an Issue")
+                .build(app)?;
+            let github = MenuItemBuilder::with_id("github", "GitHub Repository")
+                .build(app)?;
+            
+            // Build Help submenu
+            let help_menu = SubmenuBuilder::new(app, "Help")
+                .item(&report_issue)
+                .item(&github)
+                .build()?;
+            
+            // Build the full menu bar (macOS needs app name submenu first)
+            let app_menu = SubmenuBuilder::new(app, "r2modmac")
+                .item(&PredefinedMenuItem::about(
+                    app,
+                    Some("About r2modmac"),
+                    Some(
+                        tauri::menu::AboutMetadataBuilder::new()
+                            .copyright(Some(copyright_text))
+                            .authors(Some(vec!["Zard Studios".to_string()]))
+                            .build()
+                    )
+                )?)
+                .separator()
+                .item(&PredefinedMenuItem::hide(app, Some("Hide r2modmac"))?)
+                .item(&PredefinedMenuItem::hide_others(app, Some("Hide Others"))?)
+                .item(&PredefinedMenuItem::show_all(app, Some("Show All"))?)
+                .separator()
+                .item(&PredefinedMenuItem::quit(app, Some("Quit r2modmac"))?)
+                .build()?;
+            
+            let edit_menu = SubmenuBuilder::new(app, "Edit")
+                .item(&PredefinedMenuItem::undo(app, None)?)
+                .item(&PredefinedMenuItem::redo(app, None)?)
+                .separator()
+                .item(&PredefinedMenuItem::cut(app, None)?)
+                .item(&PredefinedMenuItem::copy(app, None)?)
+                .item(&PredefinedMenuItem::paste(app, None)?)
+                .item(&PredefinedMenuItem::select_all(app, None)?)
+                .build()?;
+            
+            let window_menu = SubmenuBuilder::new(app, "Window")
+                .item(&PredefinedMenuItem::minimize(app, None)?)
+                .item(&PredefinedMenuItem::close_window(app, Some("Close"))?)
+                .build()?;
+            
+            let menu = MenuBuilder::new(app)
+                .item(&app_menu)
+                .item(&edit_menu)
+                .item(&window_menu)
+                .item(&help_menu)
+                .build()?;
+            
+            app.set_menu(menu)?;
+            
+            Ok(())
+        })
+        .on_menu_event(|_app, event| {
+            match event.id().as_ref() {
+                "report_issue" => {
+                    let _ = open::that("https://github.com/Zard-Studios/r2modmac/issues/new");
+                }
+                "github" => {
+                    let _ = open::that("https://github.com/Zard-Studios/r2modmac");
+                }
+                _ => {}
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
