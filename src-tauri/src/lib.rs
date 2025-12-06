@@ -681,6 +681,7 @@ pub fn run() {
             save_settings,
             get_game_path,
             set_game_path,
+            read_image,
             open_game_folder,
             install_to_game,
             confirm_dialog,
