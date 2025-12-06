@@ -1813,9 +1813,34 @@ async fn check_update(current_version: String) -> Result<UpdateInfo, String> {
     // Use semver crate if available, or simple split compare
     let is_newer = compare_versions(clean_tag, &current_version);
     
-    // Find DMG or App Zip
+    // Detect system architecture
+    let arch = std::env::consts::ARCH; // "aarch64" for Apple Silicon, "x86_64" for Intel
+    eprintln!("[check_update] Detected architecture: {}", arch);
+    
+    // Map architecture to expected asset name patterns
+    let arch_pattern = match arch {
+        "aarch64" => "aarch64",
+        "x86_64" => "x64",
+        _ => "universal", // Fallback to universal for unknown archs
+    };
+    
+    // Find matching DMG/archive: prioritize exact arch match, fallback to universal
     let asset = release.assets.iter()
-        .find(|a| a.name.ends_with(".dmg") || a.name.ends_with(".app.tar.gz") || a.name.ends_with(".zip")); // Prioritize logic as needed
+        .find(|a| {
+            let name = a.name.to_lowercase();
+            (name.ends_with(".dmg") || name.ends_with(".tar.gz") || name.ends_with(".zip"))
+                && name.contains(arch_pattern)
+        })
+        .or_else(|| {
+            // Fallback to universal if exact arch not found
+            release.assets.iter().find(|a| {
+                let name = a.name.to_lowercase();
+                (name.ends_with(".dmg") || name.ends_with(".tar.gz") || name.ends_with(".zip"))
+                    && name.contains("universal")
+            })
+        });
+    
+    eprintln!("[check_update] Selected asset: {:?}", asset.map(|a| &a.name));
 
     Ok(UpdateInfo {
         available: is_newer,
