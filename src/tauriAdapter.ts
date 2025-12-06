@@ -24,8 +24,8 @@ export const tauriAPI: IElectronAPI = {
     async fetchPackages(gameId: string) {
         return await invoke('fetch_packages', { gameId });
     },
-    async getPackages(gameId: string, page: number, pageSize: number, search: string) {
-        return await invoke('get_packages', { gameId, page, pageSize, search });
+    async getPackages(gameId: string, page: number, pageSize: number, search: string, sort?: string) {
+        return await invoke('get_packages', { gameId, page, pageSize, search, sort });
     },
     async lookupPackagesByNames(gameId: string, names: string[]) {
         return await invoke('lookup_packages_by_names', { gameId, names });
@@ -47,6 +47,7 @@ export const tauriAPI: IElectronAPI = {
     getSettings: async () => invoke('get_settings'),
     saveSettings: async (settings) => invoke('save_settings', { settings }),
     getGamePath: async (gameIdentifier) => invoke('get_game_path', { gameIdentifier }),
+    setGamePath: async (gameIdentifier, path) => invoke('set_game_path', { gameIdentifier, path }),
     openGameFolder: async (gameIdentifier) => invoke('open_game_folder', { gameIdentifier }),
     removeMod: async (profileId: string, modName: string) => {
         await invoke('remove_mod', { profileId, modName });

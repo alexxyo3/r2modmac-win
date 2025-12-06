@@ -110,6 +110,8 @@ struct Settings {
     steam_path: Option<String>,
     #[serde(default)]
     favorite_games: Vec<String>,
+    #[serde(default)]
+    game_paths: HashMap<String, String>,
 }
 
 impl Settings {
@@ -120,6 +122,7 @@ impl Settings {
         Self {
             steam_path: if steam_path.exists() { Some(steam_path.to_string_lossy().to_string()) } else { None },
             favorite_games: Vec::new(),
+            game_paths: HashMap::new(),
         }
     }
 }
@@ -145,12 +148,16 @@ async fn get_settings(app: AppHandle) -> Result<Settings, String> {
     Ok(load_settings_impl(&app))
 }
 
-#[command]
-async fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
-    let path = get_settings_path(&app);
-    let data = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+fn save_settings_impl(app: &AppHandle, settings: &Settings) -> Result<(), String> {
+    let path = get_settings_path(app);
+    let data = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     fs::write(path, data).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[command]
+async fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
+    save_settings_impl(&app, &settings)
 }
 
 /// Normalize a string for fuzzy matching: lowercase, remove non-alphanumeric
@@ -178,6 +185,15 @@ fn get_steam_library_folders(steam_path: &std::path::Path) -> Vec<std::path::Pat
 #[command]
 async fn get_game_path(app: AppHandle, game_identifier: String) -> Result<Option<String>, String> {
     let settings = load_settings_impl(&app);
+
+    // Check manual override first
+    if let Some(path) = settings.game_paths.get(&game_identifier) {
+        if std::path::Path::new(path).exists() {
+            eprintln!("[get_game_path] Found manual override: {}", path);
+            return Ok(Some(path.clone()));
+        }
+    }
+
     let steam_path_str = settings.steam_path.ok_or("Steam path not configured")?;
     let steam_path = std::path::Path::new(&steam_path_str);
 
@@ -213,9 +229,26 @@ async fn get_game_path(app: AppHandle, game_identifier: String) -> Result<Option
 }
 
 #[command]
+async fn set_game_path(app: AppHandle, game_identifier: String, path: String) -> Result<(), String> {
+    let mut settings = load_settings_impl(&app);
+    settings.game_paths.insert(game_identifier, path);
+    save_settings_impl(&app, &settings)?;
+    Ok(())
+}
+
+#[command]
 async fn open_game_folder(app: AppHandle, game_identifier: String) -> Result<(), String> {
     let settings = load_settings_impl(&app);
     
+    // Check manual override first
+    if let Some(path) = settings.game_paths.get(&game_identifier) {
+        let path_obj = std::path::Path::new(path);
+        if path_obj.exists() {
+             let _ = open::that(path_obj);
+             return Ok(());
+        }
+    }
+
     if let Some(steam_path_str) = settings.steam_path {
         let steam_path = std::path::Path::new(&steam_path_str);
         
@@ -647,6 +680,7 @@ pub fn run() {
             get_settings,
             save_settings,
             get_game_path,
+            set_game_path,
             open_game_folder,
             install_to_game,
             confirm_dialog,
@@ -1007,12 +1041,13 @@ async fn get_packages(
     game_id: String, 
     page: usize, 
     page_size: usize, 
-    search: String
+    search: String,
+    sort: Option<String>
 ) -> Result<Vec<serde_json::Value>, String> {
     let packages_lock = state.packages.lock().map_err(|_| "Failed to lock state".to_string())?;
     
     if let Some(packages) = packages_lock.get(&game_id) {
-        let filtered: Vec<&serde_json::Value> = if search.is_empty() {
+        let mut filtered: Vec<&serde_json::Value> = if search.is_empty() {
             packages.iter().collect()
         } else {
             let search_lower = search.to_lowercase();
@@ -1025,6 +1060,41 @@ async fn get_packages(
                 name.contains(&search_lower) || full_name.contains(&search_lower)
             }).collect()
         };
+
+        // Sorting
+        if let Some(sort_by) = sort {
+            match sort_by.as_str() {
+                "downloads" => filtered.sort_by(|a, b| {
+                    let get_downloads = |p: &serde_json::Value| -> u64 {
+                        p.get("versions")
+                         .and_then(|v| v.as_array())
+                         .and_then(|arr| arr.first()) 
+                         .and_then(|ver| ver.get("downloads"))
+                         .and_then(|d| d.as_u64())
+                         .unwrap_or(0)
+                    };
+                    let da = get_downloads(a);
+                    let db = get_downloads(b);
+                    db.cmp(&da) // Descending
+                }),
+                "rating" => filtered.sort_by(|a, b| {
+                    let ra = a.get("rating_score").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let rb = b.get("rating_score").and_then(|v| v.as_i64()).unwrap_or(0);
+                    rb.cmp(&ra) // Descending
+                }),
+                "updated" => filtered.sort_by(|a, b| {
+                    let da = a.get("date_updated").and_then(|v| v.as_str()).unwrap_or("");
+                    let db = b.get("date_updated").and_then(|v| v.as_str()).unwrap_or("");
+                    db.cmp(da) // Descending (newest first)
+                }),
+                "alphabetical" => filtered.sort_by(|a, b| {
+                    let na = a.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+                    let nb = b.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+                    na.cmp(&nb) // Ascending
+                }),
+                _ => {}
+            }
+        }
 
         let start = page * page_size;
         if start >= filtered.len() {

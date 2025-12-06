@@ -23,6 +23,7 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(true)
+  const [sortOrder, setSortOrder] = useState('downloads') // Default sort
   const PAGE_SIZE = 50
 
   const [selectedMod, setSelectedMod] = useState<Package | null>(null)
@@ -78,6 +79,16 @@ function App() {
       return () => clearTimeout(timer)
     }
   }, [searchQuery])
+
+  // Sort Effect
+  useEffect(() => {
+    if (selectedCommunity) {
+      loadPackages(selectedCommunity, 0, true)
+    }
+  }, [sortOrder])
+
+  // Update Search Effect to depend on sortOrder? No, loadPackages uses current state.
+  // Actually, loadPackages reads sortOrder from state closure.
 
   const [favoriteGames, setFavoriteGames] = useState<string[]>([])
 
@@ -149,7 +160,7 @@ function App() {
         await window.ipcRenderer.fetchPackages(communityId)
       }
 
-      const newPackages = await window.ipcRenderer.getPackages(communityId, pageNum, PAGE_SIZE, searchQuery)
+      const newPackages = await window.ipcRenderer.getPackages(communityId, pageNum, PAGE_SIZE, searchQuery, sortOrder)
 
       if (newPackages.length < PAGE_SIZE) {
         setHasMore(false)
@@ -664,8 +675,20 @@ function App() {
       <div className="flex-1 flex flex-col min-w-0 bg-gray-900 h-full">
         <div className="p-5 border-b border-gray-800 flex items-center justify-between gap-4 flex-shrink-0">
           <h1 className="text-2xl font-bold text-white">Browse Mods</h1>
-          <div className="w-96">
-            <SearchBar value={searchQuery} onChange={setSearchQuery} />
+          <div className="flex items-center gap-3">
+            <select
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value)}
+              className="bg-gray-800 text-white border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 h-[42px]"
+            >
+              <option value="downloads">Most Downloaded</option>
+              <option value="rating">Top Rated</option>
+              <option value="updated">Last Updated</option>
+              <option value="alphabetical">Alphabetical</option>
+            </select>
+            <div className="w-80">
+              <SearchBar value={searchQuery} onChange={setSearchQuery} />
+            </div>
           </div>
         </div>
 

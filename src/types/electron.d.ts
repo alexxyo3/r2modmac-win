@@ -11,7 +11,7 @@ export interface IElectronAPI {
     fetchCommunities: () => Promise<Community[]>;
     fetchCommunityImages: () => Promise<Record<string, string>>;
     fetchPackages: (gameId: string) => Promise<number>;
-    getPackages: (gameId: string, page: number, pageSize: number, search: string) => Promise<any[]>;
+    getPackages: (gameId: string, page: number, pageSize: number, search: string, sort?: string) => Promise<any[]>;
     lookupPackagesByNames: (gameId: string, names: string[]) => Promise<{ found: Package[]; unknown: string[] }>;
     fetchPackageByName: (name: string, gameId?: string | null) => Promise<Package | null>;
     importProfile: (code: string) => Promise<any>;
@@ -20,9 +20,10 @@ export interface IElectronAPI {
     openModFolder: (profileId: string, modName: string) => Promise<void>;
     exportProfile: (profileId: string) => Promise<any>;
     deleteProfileFolder: (profileId: string, gameIdentifier?: string) => Promise<boolean>;
-    getSettings: () => Promise<{ steam_path: string | null; favorite_games: string[] }>;
-    saveSettings: (settings: { steam_path: string | null; favorite_games: string[] }) => Promise<void>;
+    getSettings: () => Promise<{ steam_path: string | null; favorite_games: string[]; game_paths: Record<string, string> }>;
+    saveSettings: (settings: { steam_path: string | null; favorite_games: string[]; game_paths: Record<string, string> }) => Promise<void>;
     getGamePath: (gameIdentifier: string) => Promise<string | null>;
+    setGamePath: (gameIdentifier: string, path: string) => Promise<void>;
     openGameFolder: (gameIdentifier: string) => Promise<void>;
     removeMod: (profileId: string, modName: string) => Promise<void>;
     toggleMod: (profileId: string, modName: string, enabled: boolean, gameIdentifier?: string) => Promise<void>;
