@@ -76,11 +76,12 @@ export function VirtualizedModGrid({ packages, installedMods, onInstall, onUnins
     const loadMoreRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
-        if (!onLoadMore || !loadMoreRef.current || isLoadingMore || !hasMore) return;
+        if (!onLoadMore || !loadMoreRef.current || !hasMore) return;
 
         const observer = new IntersectionObserver(
             (entries) => {
-                if (entries[0].isIntersecting && !isLoadingMore && hasMore) {
+                // Check isLoadingMore inside callback to use latest value
+                if (entries[0].isIntersecting && hasMore) {
                     onLoadMore();
                 }
             },
@@ -89,7 +90,7 @@ export function VirtualizedModGrid({ packages, installedMods, onInstall, onUnins
 
         observer.observe(loadMoreRef.current);
         return () => observer.disconnect();
-    }, [onLoadMore, isLoadingMore, hasMore]);
+    }, [onLoadMore, hasMore]);
 
     return (
         <div
@@ -142,13 +143,13 @@ export function VirtualizedModGrid({ packages, installedMods, onInstall, onUnins
                 })}
             </div>
 
-            {/* Sentinel element for Intersection Observer - triggers load when visible */}
-            {hasMore && !isLoadingMore && (
+            {/* Sentinel element for Intersection Observer - always visible when hasMore */}
+            {hasMore && (
                 <div ref={loadMoreRef} className="h-20" />
             )}
 
-            {/* Loading More Indicator */}
-            {isLoadingMore && hasMore && (
+            {/* Loading More Indicator - only show when there are already packages (not on initial load) */}
+            {isLoadingMore && hasMore && packages.length > 0 && (
                 <div className="flex items-center justify-center py-6 gap-3">
                     <svg className="animate-spin h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
