@@ -24,8 +24,35 @@ export const tauriAPI: IElectronAPI = {
     async fetchPackages(gameId: string) {
         return await invoke('fetch_packages', { gameId });
     },
-    async getPackages(gameId: string, page: number, pageSize: number, search: string, sort?: string) {
-        return await invoke('get_packages', { gameId, page, pageSize, search, sort });
+    async getAvailableCategories(gameId: string): Promise<string[]> {
+        return await invoke('get_available_categories', { gameId });
+    },
+    async getPackages(
+        gameId: string,
+        page: number,
+        pageSize: number,
+        search: string,
+        sort?: string,
+        nsfw?: boolean,
+        deprecated?: boolean,
+        sortDirection?: string,
+        categories?: string[],
+        mods?: boolean,
+        modpacks?: boolean
+    ) {
+        return await invoke('get_packages', {
+            gameId,
+            page,
+            pageSize,
+            search,
+            sort,
+            nsfw,
+            deprecated,
+            sortDirection,
+            categories,
+            mods,
+            modpacks
+        });
     },
     async lookupPackagesByNames(gameId: string, names: string[]) {
         return await invoke('lookup_packages_by_names', { gameId, names });

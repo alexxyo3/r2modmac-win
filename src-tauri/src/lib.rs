@@ -687,6 +687,7 @@ pub fn run() {
             open_mod_folder,
             fetch_packages,
             get_packages,
+            get_available_categories,
             lookup_packages_by_names,
             fetch_package_by_name,
             delete_profile_folder,
@@ -1161,33 +1162,151 @@ async fn fetch_packages(app: AppHandle, state: tauri::State<'_, AppState>, game_
 }
 
 #[command]
+async fn get_available_categories(
+    state: tauri::State<'_, AppState>,
+    game_id: String
+) -> Result<Vec<String>, String> {
+    let packages_lock = state.packages.lock().map_err(|_| "Failed to lock state".to_string())?;
+    
+    if let Some(packages) = packages_lock.get(&game_id) {
+        let mut categories: std::collections::HashSet<String> = std::collections::HashSet::new();
+        
+        for p in packages.iter() {
+            if let Some(cats) = p.get("categories").and_then(|v| v.as_array()) {
+                for cat in cats {
+                    if let Some(cat_str) = cat.as_str() {
+                        categories.insert(cat_str.to_string());
+                    }
+                }
+            }
+        }
+        
+        let mut result: Vec<String> = categories.into_iter().collect();
+        result.sort();
+        Ok(result)
+    } else {
+        Ok(vec![])
+    }
+}
+
+#[command]
 async fn get_packages(
     state: tauri::State<'_, AppState>, 
     game_id: String, 
     page: usize, 
     page_size: usize, 
     search: String,
-    sort: Option<String>
+    sort: Option<String>,
+    nsfw: Option<bool>,
+    deprecated: Option<bool>,
+    sort_direction: Option<String>,
+    categories: Option<Vec<String>>,
+    mods: Option<bool>,
+    modpacks: Option<bool>
 ) -> Result<Vec<serde_json::Value>, String> {
     let packages_lock = state.packages.lock().map_err(|_| "Failed to lock state".to_string())?;
     
     if let Some(packages) = packages_lock.get(&game_id) {
-        let mut filtered: Vec<&serde_json::Value> = if search.is_empty() {
-            packages.iter().collect()
-        } else {
-            let search_lower = search.to_lowercase();
-            packages.iter().filter(|p| {
-                // Search by name or description
+        // Initial filtering
+        let mut filtered: Vec<&serde_json::Value> = packages.iter().filter(|p| {
+            // 1. Search Filter
+            if !search.is_empty() {
+                let search_lower = search.to_lowercase();
                 let name = p["name"].as_str().unwrap_or("").to_lowercase();
                 let full_name = p["full_name"].as_str().unwrap_or("").to_lowercase();
-                // let description = p["versions"][0]["description"].as_str().unwrap_or("").to_lowercase(); // Optional: search description too
-                
-                name.contains(&search_lower) || full_name.contains(&search_lower)
-            }).collect()
-        };
+                if !name.contains(&search_lower) && !full_name.contains(&search_lower) {
+                    return false;
+                }
+            }
+
+            // 2. NSFW Filter
+            // If nsfw tag is FALSE (default): Hide NSFW content
+            // If nsfw tag is TRUE: Show ONLY NSFW content
+            let nsfw_tag_active = nsfw.unwrap_or(false);
+            let is_nsfw = p.get("has_nsfw_content").and_then(|v| v.as_bool()).unwrap_or(false);
+            if nsfw_tag_active {
+                // Show ONLY NSFW
+                if !is_nsfw { return false; }
+            } else {
+                // Hide NSFW
+                if is_nsfw { return false; }
+            }
+
+            // 3. Deprecated Filter
+            // If deprecated tag is FALSE (default): Hide Deprecated content
+            // If deprecated tag is TRUE: Show ONLY Deprecated content
+            let deprecated_tag_active = deprecated.unwrap_or(false);
+            let is_deprecated = p.get("is_deprecated").and_then(|v| v.as_bool()).unwrap_or(false);
+            if deprecated_tag_active {
+                // Show ONLY Deprecated
+                if !is_deprecated { return false; }
+            } else {
+                // Hide Deprecated
+                if is_deprecated { return false; }
+            }
+
+            // 4. Mods/Modpacks Filter
+            // Logic: Both OFF = show all, Both ON = show all, Only one ON = show only that type
+            let mods_active = mods.unwrap_or(false);
+            let modpacks_active = modpacks.unwrap_or(false);
+            
+            // Check if package is a modpack (has "Modpacks" in categories)
+            let pkg_categories: Vec<String> = p.get("categories")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|c| c.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let is_modpack = pkg_categories.iter().any(|c| c.to_lowercase() == "modpacks");
+            
+            // Apply filter only if exactly one is active
+            if mods_active != modpacks_active {
+                if mods_active && is_modpack {
+                    return false; // Show only mods, this is a modpack - hide it
+                }
+                if modpacks_active && !is_modpack {
+                    return false; // Show only modpacks, this is a mod - hide it
+                }
+            }
+
+            // 5. Category/Tag Filter
+            // If categories is empty or None, show all
+            // If categories has values, package must match at least one:
+            // - Match in categories array
+            // - OR match in package name
+            // - OR match in package description
+            if let Some(ref filter_cats) = categories {
+                if !filter_cats.is_empty() {
+                    let pkg_categories: Vec<String> = p.get("categories")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.iter().filter_map(|c| c.as_str().map(|s| s.to_lowercase())).collect())
+                        .unwrap_or_default();
+                    
+                    let pkg_name = p.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+                    let pkg_full_name = p.get("full_name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+                    
+                    // Check if any filter tag matches
+                    let has_match = filter_cats.iter().any(|fc| {
+                        let fc_lower = fc.to_lowercase();
+                        // Match in categories
+                        pkg_categories.iter().any(|c| c.contains(&fc_lower)) ||
+                        // Match in name
+                        pkg_name.contains(&fc_lower) ||
+                        pkg_full_name.contains(&fc_lower)
+                    });
+                    
+                    if !has_match {
+                        return false;
+                    }
+                }
+            }
+
+            true
+        }).collect();
 
         // Sorting
         if let Some(sort_by) = sort {
+            let direction = sort_direction.unwrap_or("desc".to_string());
+            let is_asc = direction == "asc";
+
             match sort_by.as_str() {
                 "downloads" => filtered.sort_by(|a, b| {
                     let get_downloads = |p: &serde_json::Value| -> u64 {
@@ -1200,22 +1319,24 @@ async fn get_packages(
                     };
                     let da = get_downloads(a);
                     let db = get_downloads(b);
-                    db.cmp(&da) // Descending
+                    if is_asc { da.cmp(&db) } else { db.cmp(&da) }
                 }),
                 "rating" => filtered.sort_by(|a, b| {
                     let ra = a.get("rating_score").and_then(|v| v.as_i64()).unwrap_or(0);
                     let rb = b.get("rating_score").and_then(|v| v.as_i64()).unwrap_or(0);
-                    rb.cmp(&ra) // Descending
+                    if is_asc { ra.cmp(&rb) } else { rb.cmp(&ra) }
                 }),
                 "updated" => filtered.sort_by(|a, b| {
                     let da = a.get("date_updated").and_then(|v| v.as_str()).unwrap_or("");
                     let db = b.get("date_updated").and_then(|v| v.as_str()).unwrap_or("");
-                    db.cmp(da) // Descending (newest first)
+                    if is_asc { da.cmp(db) } else { db.cmp(da) }
                 }),
                 "alphabetical" => filtered.sort_by(|a, b| {
                     let na = a.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
                     let nb = b.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
-                    na.cmp(&nb) // Ascending
+                    // Ascending: A-Z (na vs nb)
+                    // Descending: Z-A (nb vs na)
+                    if is_asc { na.cmp(&nb) } else { nb.cmp(&na) }
                 }),
                 _ => {}
             }

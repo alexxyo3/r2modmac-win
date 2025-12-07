@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Layout } from './components/Layout'
+import type { FilterOptions } from './components/FilterPopover'
+import { FilterPopover } from './components/FilterPopover'
 import { GameSelector } from './components/GameList'
 import { SearchBar } from './components/SearchBar'
 import { VirtualizedModGrid } from './components/VirtualizedModGrid'
@@ -26,8 +28,17 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(true)
-  const [sortOrder, setSortOrder] = useState('downloads') // Default sort
+  const [filterOptions, setFilterOptions] = useState<FilterOptions>({
+    sort: 'downloads',
+    sortDirection: 'desc',
+    nsfw: false,
+    deprecated: false,
+    mods: false,
+    modpacks: false,
+    categories: []
+  })
   const PAGE_SIZE = 50
+  const [availableCategories, setAvailableCategories] = useState<string[]>([])
 
   const [selectedMod, setSelectedMod] = useState<Package | null>(null)
   const [gameSearchQuery, setGameSearchQuery] = useState('')
@@ -82,6 +93,10 @@ function App() {
     if (selectedCommunity) {
       // Initial load for game
       loadPackages(selectedCommunity, 0, true)
+      // Fetch all available categories from backend cache
+      window.ipcRenderer.getAvailableCategories(selectedCommunity).then(cats => {
+        setAvailableCategories(cats)
+      }).catch(err => console.error('Failed to load categories', err))
       // Reset profile selection when changing game
       if (activeProfileId) {
         selectProfile('')
@@ -99,12 +114,12 @@ function App() {
     }
   }, [searchQuery])
 
-  // Sort Effect
+  // Sort/Filter Effect
   useEffect(() => {
     if (selectedCommunity) {
       loadPackages(selectedCommunity, 0, true)
     }
-  }, [sortOrder])
+  }, [filterOptions])
 
   // Update Search Effect to depend on sortOrder? No, loadPackages uses current state.
   // Actually, loadPackages reads sortOrder from state closure.
@@ -179,7 +194,19 @@ function App() {
         await window.ipcRenderer.fetchPackages(communityId)
       }
 
-      const newPackages = await window.ipcRenderer.getPackages(communityId, pageNum, PAGE_SIZE, searchQuery, sortOrder)
+      const newPackages = await window.ipcRenderer.getPackages(
+        communityId,
+        pageNum,
+        PAGE_SIZE,
+        searchQuery,
+        filterOptions.sort,
+        filterOptions.nsfw,
+        filterOptions.deprecated,
+        filterOptions.sortDirection,
+        filterOptions.categories,
+        filterOptions.mods,
+        filterOptions.modpacks
+      )
 
       if (newPackages.length < PAGE_SIZE) {
         setHasMore(false)
@@ -752,16 +779,11 @@ function App() {
         <div className="p-5 border-b border-gray-800 flex items-center justify-between gap-4 flex-shrink-0">
           <h1 className="text-2xl font-bold text-white">Browse Mods</h1>
           <div className="flex items-center gap-3">
-            <select
-              value={sortOrder}
-              onChange={(e) => setSortOrder(e.target.value)}
-              className="bg-gray-800 text-white border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 h-[42px]"
-            >
-              <option value="downloads">Most Downloaded</option>
-              <option value="rating">Top Rated</option>
-              <option value="updated">Last Updated</option>
-              <option value="alphabetical">Alphabetical</option>
-            </select>
+            <FilterPopover
+              options={filterOptions}
+              onChange={setFilterOptions}
+              availableCategories={availableCategories}
+            />
             <div className="w-80">
               <SearchBar value={searchQuery} onChange={setSearchQuery} />
             </div>

@@ -11,7 +11,20 @@ export interface IElectronAPI {
     fetchCommunities: () => Promise<Community[]>;
     fetchCommunityImages: () => Promise<Record<string, string>>;
     fetchPackages: (gameId: string) => Promise<number>;
-    getPackages: (gameId: string, page: number, pageSize: number, search: string, sort?: string) => Promise<any[]>;
+    getAvailableCategories: (gameId: string) => Promise<string[]>;
+    getPackages(
+        gameId: string,
+        page: number,
+        pageSize: number,
+        search: string,
+        sort?: string,
+        nsfw?: boolean,
+        deprecated?: boolean,
+        sortDirection?: string,
+        categories?: string[],
+        mods?: boolean,
+        modpacks?: boolean
+    ): Promise<any[]>;
     lookupPackagesByNames: (gameId: string, names: string[]) => Promise<{ found: Package[]; unknown: string[] }>;
     fetchPackageByName: (name: string, gameId?: string | null) => Promise<Package | null>;
     importProfile: (code: string) => Promise<any>;
