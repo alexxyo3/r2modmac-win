@@ -25,6 +25,7 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
     const [loadingContent, setLoadingContent] = useState(false);
     const [dependencies, setDependencies] = useState<Package[]>([]);
     const [loadingKey, setLoadingKey] = useState<string>('');
+    const [showImageLightbox, setShowImageLightbox] = useState(false);
 
     useEffect(() => {
         if (isOpen && mod && loadingKey !== mod.full_name) {
@@ -85,126 +86,137 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
 
     if (!isOpen) return null;
 
+    // Format bytes to human readable string (KB, MB, GB)
+    const formatBytes = (bytes: number): string => {
+        if (bytes >= 1000 * 1000 * 1000) {
+            return `${(bytes / (1000 * 1000 * 1000)).toFixed(1)} GB`;
+        } else if (bytes >= 1000 * 1000) {
+            return `${(bytes / (1000 * 1000)).toFixed(1)} MB`;
+        } else if (bytes >= 1000) {
+            return `${(bytes / 1000).toFixed(0)} KB`;
+        }
+        return `${bytes} B`;
+    };
+
     // Calculate total size including dependencies
     const totalBytes = mod.file_size + dependencies.reduce((sum, dep) => sum + (dep.versions[0]?.file_size || 0), 0);
-    const sizeDisplay = dependencies.length > 0
-        ? (totalBytes >= 1024 * 1024 ? `${(totalBytes / (1024 * 1024)).toFixed(1)} MB` : `${(totalBytes / 1024).toFixed(0)} KB`)
-        : `${(mod.file_size / 1024).toFixed(0)} KB`;
+    const sizeDisplay = dependencies.length > 0 ? formatBytes(totalBytes) : formatBytes(mod.file_size);
 
     return (
-        <div
-            className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-6"
-            onClick={onClose}
-        >
+        <>
             <div
-                className="bg-gray-800 rounded-xl max-w-4xl w-full h-[90vh] flex flex-col border border-gray-700 shadow-2xl"
-                onClick={(e) => e.stopPropagation()}
+                className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-6"
+                onClick={onClose}
             >
-                {/* Header with Icon and Title */}
-                <div className="flex items-start gap-4 p-6 border-b border-gray-700 bg-gray-900/50 flex-shrink-0">
-                    <div className="w-20 h-20 bg-gray-900 rounded-lg flex-shrink-0 overflow-hidden border border-gray-700 relative group">
-                        {mod.icon ? (
-                            <img src={mod.icon} alt={mod.name} className="w-full h-full object-cover" />
-                        ) : (
-                            <div className="w-full h-full flex items-center justify-center text-3xl font-bold text-gray-600">
-                                {mod.name[0]}
-                            </div>
-                        )}
-                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                            <span className="text-white font-bold text-xs">View</span>
-                        </div>
-                        {mod.website_url && (
-                            <button
-                                className="absolute inset-0 w-full h-full cursor-pointer opacity-0"
-                                onClick={() => {
-                                    import('@tauri-apps/plugin-shell').then(({ open }) => {
-                                        open(mod.website_url!);
-                                    });
-                                }}
-                                title="Open Website"
-                            />
-                        )}
-                    </div>
-
-                    <div className="flex-1 min-w-0">
-                        <div className="flex justify-between items-start">
-                            <div>
-                                <h2 className="text-2xl font-bold text-white mb-1">{mod.name}</h2>
-                                <p className="text-sm text-gray-400 mb-2">by {mod.full_name.split('-')[0]}</p>
-                            </div>
-                            <div className="text-right flex flex-col items-end gap-1">
-                                <div>
-                                    <span className="block text-xs uppercase text-gray-500 font-bold tracking-wider mb-0.5">Updated</span>
-                                    <span className="text-sm text-gray-300">{new Date(mod.date_created).toLocaleDateString()}</span>
-                                </div>
-                                {mod.website_url && (
-                                    <button
-                                        onClick={() => {
-                                            import('@tauri-apps/plugin-shell').then(({ open }) => {
-                                                open(mod.website_url!);
-                                            });
-                                        }}
-                                        className="flex items-center gap-1 text-sm text-blue-400 hover:text-blue-300 transition-colors mt-2"
-                                    >
-                                        Website
-                                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                                        </svg>
-                                    </button>
-                                )}
-                            </div>
-                        </div>
-
-                        <div className="flex items-center gap-3 text-xs text-gray-500 mt-2">
-                            <span className="bg-gray-700 px-2 py-1 rounded text-gray-300">v{mod.version_number}</span>
-                            <span className="flex items-center gap-1" title={`${mod.downloads.toLocaleString()} downloads`}>
-                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                </svg>
-                                {mod.downloads.toLocaleString()}
-                            </span>
-                            <span className="flex items-center gap-1" title={dependencies.length > 0 ? `Package: ${(mod.file_size / 1024).toFixed(0)} KB + ${dependencies.length} dependencies` : undefined}>
-                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                                </svg>
-                                {sizeDisplay}
-                                {dependencies.length > 0 && <span className="text-gray-600 text-[10px]">(total)</span>}
-                            </span>
-                        </div>
-                    </div>
-
-                    <button
-                        onClick={onClose}
-                        className="text-gray-400 hover:text-white transition-colors p-2 flex-shrink-0"
-                    >
-                        ✕
-                    </button>
-                </div>
-
-                {/* Tabs */}
-                <div className="flex border-b border-gray-700 bg-gray-900/30 px-6 gap-6">
-                    {(['description', 'changelog', 'dependencies'] as const).map(tab => (
-                        <button
-                            key={tab}
-                            onClick={() => setActiveTab(tab)}
-                            className={`py-3 text-sm font-medium border-b-2 transition-colors capitalize flex items-center gap-2 ${activeTab === tab
-                                ? 'text-blue-400 border-blue-400'
-                                : 'text-gray-400 border-transparent hover:text-gray-200'
-                                }`}
+                <div
+                    className="bg-gray-800 rounded-xl max-w-4xl w-full h-[90vh] flex flex-col border border-gray-700 shadow-2xl"
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    {/* Header with Icon and Title */}
+                    <div className="flex items-start gap-5 p-6 border-b border-gray-700 bg-gray-900/50 flex-shrink-0">
+                        {/* Icon - larger, clickable for lightbox */}
+                        <div
+                            className="w-24 h-24 bg-gray-900 rounded-xl flex-shrink-0 overflow-hidden border border-gray-700 relative group shadow-lg cursor-pointer"
+                            onClick={() => mod.icon && setShowImageLightbox(true)}
                         >
-                            {tab}
-                            {tab === 'dependencies' && mod.dependencies?.length > 0 && (
-                                <span className={`text-xs px-1.5 py-0.5 rounded-full ${activeTab === tab ? 'bg-blue-500/20 text-blue-300' : 'bg-gray-700 text-gray-400'}`}>
-                                    {mod.dependencies.length}
-                                </span>
+                            {mod.icon ? (
+                                <img src={mod.icon} alt={mod.name} className="w-full h-full object-cover" />
+                            ) : (
+                                <div className="w-full h-full flex items-center justify-center text-4xl font-bold text-gray-600">
+                                    {mod.name[0]}
+                                </div>
                             )}
-                        </button>
-                    ))}
-                </div>
+                            {mod.icon && (
+                                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                                    </svg>
+                                </div>
+                            )}
+                        </div>
 
-                {/* Scrollable Content */}
-                <div className="overflow-y-auto flex-1 p-6 min-h-0 bg-gray-850">
-                    <style>{`
+                        {/* Title & Info */}
+                        <div className="flex-1 min-w-0 flex flex-col justify-between h-24">
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <h2 className="text-2xl font-bold text-white leading-tight">{mod.name}</h2>
+                                    <p className="text-sm text-gray-400 mt-0.5">by {mod.full_name.split('-')[0]}</p>
+                                </div>
+                                <div className="text-right flex flex-col items-end">
+                                    <span className="text-[10px] uppercase text-gray-500 font-bold tracking-wider">Updated</span>
+                                    <span className="text-sm text-gray-300">{new Date(mod.date_created).toLocaleDateString()}</span>
+                                    {mod.website_url && (
+                                        <button
+                                            onClick={() => {
+                                                import('@tauri-apps/plugin-shell').then(({ open }) => {
+                                                    open(mod.website_url!);
+                                                });
+                                            }}
+                                            className="flex items-center gap-1 text-sm text-blue-400 hover:text-blue-300 transition-colors mt-1"
+                                        >
+                                            Website
+                                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                            </svg>
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Stats row - aligned at bottom */}
+                            <div className="flex items-center gap-4 text-xs text-gray-500 mt-auto">
+                                <span className="bg-gray-700 px-2.5 py-1 rounded-md text-gray-300 font-medium">v{mod.version_number}</span>
+                                <span className="flex items-center gap-1.5" title={`${mod.downloads.toLocaleString()} downloads`}>
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                    </svg>
+                                    {mod.downloads.toLocaleString()}
+                                </span>
+                                <span className="flex items-center gap-1.5" title={dependencies.length > 0 ? `Package: ${formatBytes(mod.file_size)} + ${dependencies.length} dependencies` : undefined}>
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                                    </svg>
+                                    {sizeDisplay}
+                                    {dependencies.length > 0 && <span className="text-gray-600 text-[10px] ml-0.5">(total)</span>}
+                                </span>
+                            </div>
+                        </div>
+
+                        {/* Close button */}
+                        <button
+                            onClick={onClose}
+                            className="text-gray-500 hover:text-white transition-colors p-1 -mt-1 -mr-1"
+                        >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+
+                    {/* Tabs */}
+                    <div className="flex border-b border-gray-700 bg-gray-900/30 px-6 gap-6">
+                        {(['description', 'changelog', 'dependencies'] as const).map(tab => (
+                            <button
+                                key={tab}
+                                onClick={() => setActiveTab(tab)}
+                                className={`py-3 text-sm font-medium border-b-2 transition-colors capitalize flex items-center gap-2 ${activeTab === tab
+                                    ? 'text-blue-400 border-blue-400'
+                                    : 'text-gray-400 border-transparent hover:text-gray-200'
+                                    }`}
+                            >
+                                {tab}
+                                {tab === 'dependencies' && mod.dependencies?.length > 0 && (
+                                    <span className={`text-xs px-1.5 py-0.5 rounded-full ${activeTab === tab ? 'bg-blue-500/20 text-blue-300' : 'bg-gray-700 text-gray-400'}`}>
+                                        {mod.dependencies.length}
+                                    </span>
+                                )}
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Scrollable Content */}
+                    <div className="overflow-y-auto flex-1 p-6 min-h-0 bg-gray-850">
+                        <style>{`
                         .prose details {
                             background-color: rgba(31, 41, 55, 0.5);
                             border: 1px solid rgba(75, 85, 99, 0.4);
@@ -223,137 +235,163 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
                             color: #ffffff;
                         }
                     `}</style>
-                    {activeTab === 'description' && (
-                        <div>
-                            {loadingContent && !readmeContent ? (
-                                <div className="animate-pulse space-y-3">
-                                    <div className="h-4 bg-gray-700 rounded w-3/4"></div>
-                                    <div className="h-4 bg-gray-700 rounded w-1/2"></div>
-                                    <div className="h-4 bg-gray-700 rounded w-5/6"></div>
-                                </div>
-                            ) : readmeContent ? (
-                                <div
-                                    className="prose prose-invert prose-sm max-w-none prose-headings:text-white prose-a:text-blue-400 hover:prose-a:text-blue-300 prose-img:rounded-lg break-words overflow-hidden"
-                                    dangerouslySetInnerHTML={{ __html: readmeContent }}
-                                />
-                            ) : (
-                                <div className="text-center text-gray-500 py-10">
-                                    <p>{mod.description || "No description available."}</p>
-                                </div>
-                            )}
-                        </div>
-                    )}
+                        {activeTab === 'description' && (
+                            <div>
+                                {loadingContent && !readmeContent ? (
+                                    <div className="animate-pulse space-y-3">
+                                        <div className="h-4 bg-gray-700 rounded w-3/4"></div>
+                                        <div className="h-4 bg-gray-700 rounded w-1/2"></div>
+                                        <div className="h-4 bg-gray-700 rounded w-5/6"></div>
+                                    </div>
+                                ) : readmeContent ? (
+                                    <div
+                                        className="prose prose-invert prose-sm max-w-none prose-headings:text-white prose-a:text-blue-400 hover:prose-a:text-blue-300 prose-img:rounded-lg break-words overflow-hidden"
+                                        dangerouslySetInnerHTML={{ __html: readmeContent }}
+                                    />
+                                ) : (
+                                    <div className="text-center text-gray-500 py-10">
+                                        <p>{mod.description || "No description available."}</p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
 
-                    {activeTab === 'changelog' && (
-                        <div>
-                            {loadingContent && !changelogContent ? (
-                                <div className="animate-pulse space-y-3">
-                                    <div className="h-4 bg-gray-700 rounded w-1/4"></div>
-                                    <div className="h-4 bg-gray-700 rounded w-full"></div>
-                                </div>
-                            ) : changelogContent ? (
-                                <div
-                                    className="prose prose-invert prose-sm max-w-none prose-headings:text-white prose-a:text-blue-400 hover:prose-a:text-blue-300 break-words overflow-hidden"
-                                    dangerouslySetInnerHTML={{ __html: changelogContent }}
-                                />
-                            ) : (
-                                <div className="text-center text-gray-500 py-10">
-                                    <p>No changelog found.</p>
-                                </div>
-                            )}
-                        </div>
-                    )}
+                        {activeTab === 'changelog' && (
+                            <div>
+                                {loadingContent && !changelogContent ? (
+                                    <div className="animate-pulse space-y-3">
+                                        <div className="h-4 bg-gray-700 rounded w-1/4"></div>
+                                        <div className="h-4 bg-gray-700 rounded w-full"></div>
+                                    </div>
+                                ) : changelogContent ? (
+                                    <div
+                                        className="prose prose-invert prose-sm max-w-none prose-headings:text-white prose-a:text-blue-400 hover:prose-a:text-blue-300 break-words overflow-hidden"
+                                        dangerouslySetInnerHTML={{ __html: changelogContent }}
+                                    />
+                                ) : (
+                                    <div className="text-center text-gray-500 py-10">
+                                        <p>No changelog found.</p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
 
-                    {activeTab === 'dependencies' && (
-                        <div>
-                            {dependencies.length > 0 ? (
-                                <div className="space-y-2">
-                                    {dependencies.map((dep, idx) => (
-                                        <div key={idx} className="bg-gray-800 p-3 rounded border border-gray-700 flex items-center justify-between">
-                                            <div className="flex items-center gap-3">
-                                                <div className="w-12 h-12 bg-gray-900 rounded flex-shrink-0 overflow-hidden border border-gray-700">
-                                                    {dep.versions[0]?.icon ? (
-                                                        <img src={dep.versions[0].icon} alt={dep.name} className="w-full h-full object-cover" />
-                                                    ) : (
-                                                        <div className="w-full h-full flex items-center justify-center text-xs font-bold text-gray-600">
-                                                            {dep.name[0]}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                <div>
-                                                    <div className="flex items-center gap-2">
-                                                        <p className="text-white font-medium text-sm">{dep.name}</p>
-                                                        <span className="bg-gray-700 px-1.5 py-0.5 rounded text-gray-400 text-xs">
-                                                            v{dep.versions[0]?.version_number}
-                                                        </span>
-                                                        {installedMods.some(m => m.fullName.startsWith(dep.full_name)) && (
-                                                            <span className="bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded text-xs font-medium">
-                                                                Installed
-                                                            </span>
+                        {activeTab === 'dependencies' && (
+                            <div>
+                                {dependencies.length > 0 ? (
+                                    <div className="space-y-2">
+                                        {dependencies.map((dep, idx) => (
+                                            <div key={idx} className="bg-gray-800 p-3 rounded border border-gray-700 flex items-center justify-between">
+                                                <div className="flex items-center gap-3">
+                                                    <div className="w-12 h-12 bg-gray-900 rounded flex-shrink-0 overflow-hidden border border-gray-700">
+                                                        {dep.versions[0]?.icon ? (
+                                                            <img src={dep.versions[0].icon} alt={dep.name} className="w-full h-full object-cover" />
+                                                        ) : (
+                                                            <div className="w-full h-full flex items-center justify-center text-xs font-bold text-gray-600">
+                                                                {dep.name[0]}
+                                                            </div>
                                                         )}
                                                     </div>
-                                                    <p className="text-gray-500 text-xs truncate max-w-[300px]">{dep.versions[0]?.description}</p>
+                                                    <div>
+                                                        <div className="flex items-center gap-2">
+                                                            <p className="text-white font-medium text-sm">{dep.name}</p>
+                                                            <span className="bg-gray-700 px-1.5 py-0.5 rounded text-gray-400 text-xs">
+                                                                v{dep.versions[0]?.version_number}
+                                                            </span>
+                                                            {installedMods.some(m => m.fullName.startsWith(dep.full_name)) && (
+                                                                <span className="bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded text-xs font-medium">
+                                                                    Installed
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <p className="text-gray-500 text-xs truncate max-w-[300px]">{dep.versions[0]?.description}</p>
+                                                    </div>
                                                 </div>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            ) : (
-                                mod.dependencies && mod.dependencies.length > 0 ? (
-                                    <div className="space-y-2 opacity-50">
-                                        {mod.dependencies.map((dep, idx) => (
-                                            <div key={idx} className="bg-gray-800 p-3 rounded border border-gray-700 flex items-center gap-3">
-                                                <div className="w-10 h-10 bg-gray-900 rounded flex items-center justify-center text-gray-500 text-xs font-mono border border-gray-700">DEP</div>
-                                                <span className="text-gray-300 font-mono text-sm">{dep}</span>
                                             </div>
                                         ))}
                                     </div>
                                 ) : (
-                                    <div className="text-center text-gray-500 py-10">
-                                        <p>No dependencies.</p>
-                                    </div>
-                                )
-                            )}
-                        </div>
-                    )}
-                </div>
+                                    mod.dependencies && mod.dependencies.length > 0 ? (
+                                        <div className="space-y-2 opacity-50">
+                                            {mod.dependencies.map((dep, idx) => (
+                                                <div key={idx} className="bg-gray-800 p-3 rounded border border-gray-700 flex items-center gap-3">
+                                                    <div className="w-10 h-10 bg-gray-900 rounded flex items-center justify-center text-gray-500 text-xs font-mono border border-gray-700">DEP</div>
+                                                    <span className="text-gray-300 font-mono text-sm">{dep}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="text-center text-gray-500 py-10">
+                                            <p>No dependencies.</p>
+                                        </div>
+                                    )
+                                )}
+                            </div>
+                        )}
+                    </div>
 
-                {/* Footer with Actions */}
-                <div className="p-6 border-t border-gray-700 bg-gray-900/50 flex gap-3 flex-shrink-0">
-                    {isInstalled && onUninstall && (
+                    {/* Footer with Actions */}
+                    <div className="p-6 border-t border-gray-700 bg-gray-900/50 flex gap-3 flex-shrink-0">
+                        {isInstalled && onUninstall && (
+                            <button
+                                onClick={() => {
+                                    onUninstall();
+                                }}
+                                className="p-2 rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white transition-all duration-200 border border-red-500/20 flex-shrink-0"
+                                title="Uninstall"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                </svg>
+                            </button>
+                        )}
                         <button
                             onClick={() => {
-                                onUninstall();
+                                if (hasUpdate && onUpdate) {
+                                    onUpdate();
+                                } else {
+                                    onInstall();
+                                }
+                                onClose();
                             }}
-                            className="p-2 rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white transition-all duration-200 border border-red-500/20 flex-shrink-0"
-                            title="Uninstall"
+                            disabled={isInstalled && !hasUpdate}
+                            className={`flex-1 px-4 py-2.5 rounded-lg font-semibold transition-colors ${hasUpdate
+                                ? 'bg-amber-500 hover:bg-amber-600 text-white'
+                                : isInstalled
+                                    ? 'bg-green-500/10 text-green-500 border border-green-500/20 cursor-default'
+                                    : 'bg-blue-600 hover:bg-blue-500 text-white'
+                                }`}
                         >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                            </svg>
+                            {hasUpdate ? 'Update' : isInstalled ? 'Installed' : 'Install Mod'}
                         </button>
-                    )}
-                    <button
-                        onClick={() => {
-                            if (hasUpdate && onUpdate) {
-                                onUpdate();
-                            } else {
-                                onInstall();
-                            }
-                            onClose();
-                        }}
-                        disabled={isInstalled && !hasUpdate}
-                        className={`flex-1 px-4 py-2.5 rounded-lg font-semibold transition-colors ${hasUpdate
-                            ? 'bg-amber-500 hover:bg-amber-600 text-white'
-                            : isInstalled
-                                ? 'bg-green-500/10 text-green-500 border border-green-500/20 cursor-default'
-                                : 'bg-blue-600 hover:bg-blue-500 text-white'
-                            }`}
-                    >
-                        {hasUpdate ? 'Update' : isInstalled ? 'Installed' : 'Install Mod'}
-                    </button>
+                    </div>
                 </div>
             </div>
-        </div>
+
+            {/* Image Lightbox */}
+            {
+                showImageLightbox && mod.icon && (
+                    <div
+                        className="fixed inset-0 bg-black/90 flex items-center justify-center z-[100] cursor-pointer"
+                        onClick={() => setShowImageLightbox(false)}
+                    >
+                        <img
+                            src={mod.icon}
+                            alt={mod.name}
+                            className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl"
+                            onClick={(e) => e.stopPropagation()}
+                        />
+                        <button
+                            className="absolute top-6 right-6 text-white/70 hover:text-white transition-colors"
+                            onClick={() => setShowImageLightbox(false)}
+                        >
+                            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                )
+            }
+        </>
     );
 }

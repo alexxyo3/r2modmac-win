@@ -9,6 +9,18 @@ interface ModCardProps {
 }
 
 export function ModCard({ mod, onInstall, onUninstall, onClick, installStatus }: ModCardProps) {
+    // Format bytes to human readable string (KB, MB, GB)
+    const formatBytes = (bytes: number): string => {
+        if (bytes >= 1000 * 1000 * 1000) {
+            return `${(bytes / (1000 * 1000 * 1000)).toFixed(1)} GB`;
+        } else if (bytes >= 1000 * 1000) {
+            return `${(bytes / (1000 * 1000)).toFixed(1)} MB`;
+        } else if (bytes >= 1000) {
+            return `${(bytes / 1000).toFixed(0)} KB`;
+        }
+        return `${bytes} B`;
+    };
+
     return (
         <div
             className="bg-gray-800 rounded-xl p-4 border border-gray-700 hover:border-blue-500/50 transition-all duration-200 group flex flex-col h-full cursor-pointer"
@@ -66,10 +78,17 @@ export function ModCard({ mod, onInstall, onUninstall, onClick, installStatus }:
                         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                         {mod.downloads.toLocaleString()}
                     </div>
-                    <div className="flex items-center gap-1">
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>
-                        {(mod.file_size / 1024).toFixed(0)} KB
-                    </div>
+                    {mod.dependencies && mod.dependencies.length >= 5 ? (
+                        <div className="flex items-center gap-1 text-indigo-400">
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+                            {mod.dependencies.length} mods
+                        </div>
+                    ) : (
+                        <div className="flex items-center gap-1">
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>
+                            {formatBytes(mod.file_size)}
+                        </div>
+                    )}
                 </div>
 
                 <div className="flex gap-2">
