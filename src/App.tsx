@@ -8,6 +8,7 @@ import { VirtualizedModGrid } from './components/VirtualizedModGrid'
 import { ModDetailModal } from './components/ModDetailModal'
 import { ProfileList } from './components/ProfileList'
 import { ProgressModal } from './components/ProgressModal'
+import { UninstallModal } from './components/UninstallModal'
 import { SettingsModal } from './components/SettingsModal'
 import { ExportModal } from './components/ExportModal'
 import { CrossOverGuideModal } from './components/CrossOverGuideModal';
@@ -53,6 +54,19 @@ function App() {
   const [showCrossOverGuide, setShowCrossOverGuide] = useState(false)
   const [hideCrossOverGuide, setHideCrossOverGuide] = useState(false)
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const [uninstallModalState, setUninstallModalState] = useState<{
+    isOpen: boolean;
+    pkg: Package | null;
+    orphanDeps: { name: string; icon?: string }[];
+    allInstalledDeps: string[];
+    profileId: string | null;
+  }>({
+    isOpen: false,
+    pkg: null,
+    orphanDeps: [],
+    allInstalledDeps: [],
+    profileId: null
+  })
   const [showUpdateModal, setShowUpdateModal] = useState(false)
 
   const {
@@ -371,6 +385,180 @@ function App() {
       console.error('Failed to install mod:', err);
       setProgressState(prev => ({ ...prev, isOpen: false }));
       alert(`Failed to install mod: ${err.message}`);
+    }
+  };
+
+  // Uninstall mod with option to remove orphan dependencies - Opens modal
+  const handleUninstallWithDependencies = async (pkg: Package, targetProfileId?: string) => {
+    const profileIdToUse = targetProfileId || activeProfileId;
+    if (!profileIdToUse) return;
+
+    const profile = profiles.find(p => p.id === profileIdToUse);
+    if (!profile) return;
+
+    const version = pkg.versions[0];
+    if (!version) {
+      // No version data, do simple uninstall via modal with no deps
+      setUninstallModalState({
+        isOpen: true,
+        pkg,
+        orphanDeps: [],
+        allInstalledDeps: [],
+        profileId: profileIdToUse
+      });
+      return;
+    }
+
+    // Get dependencies of this mod
+    // FILTER OUT BepInExPack IMMEDIATELY
+    const modDependencies = version.dependencies
+      .map(dep => {
+        const parts = dep.split('-');
+        return parts.length >= 2 ? `${parts[0]}-${parts[1]}` : dep;
+      })
+      .filter(dep => !dep.toLowerCase().includes('bepinexpack'));
+
+    // Find which dependencies are "orphan" (not used by other installed mods)
+    const orphanDepsDetails: { name: string; icon?: string }[] = [];
+
+    if (modDependencies.length > 0 && selectedCommunity) {
+      // Get dependencies of all OTHER installed mods
+      const otherMods = profile.mods.filter(m => !m.fullName.startsWith(pkg.full_name));
+      const otherModNames = otherMods.map(m => {
+        const parts = m.fullName.split('-');
+        return parts.length >= 2 ? `${parts[0]}-${parts[1]}` : m.fullName;
+      });
+
+      // Lookup other mods to get their dependencies
+      let otherModsDeps = new Set<string>();
+      if (otherModNames.length > 0) {
+        try {
+          const result = await window.ipcRenderer.lookupPackagesByNames(selectedCommunity, otherModNames);
+          for (const otherPkg of result.found) {
+            const otherVer = otherPkg.versions[0];
+            if (otherVer) {
+              for (const dep of otherVer.dependencies) {
+                const parts = dep.split('-');
+                const depName = parts.length >= 2 ? `${parts[0]}-${parts[1]}` : dep;
+                otherModsDeps.add(depName);
+              }
+            }
+          }
+        } catch (err) {
+          console.error('Failed to lookup other mods dependencies:', err);
+        }
+      }
+
+      // Find orphans: deps of mod being removed that are NOT in otherModsDeps AND are installed
+      for (const dep of modDependencies) {
+        if (!otherModsDeps.has(dep)) {
+          // Check if this dep is actually installed
+          const installedDep = profile.mods.find(m => m.fullName.startsWith(dep));
+          if (installedDep) {
+            orphanDepsDetails.push({
+              name: dep,
+              icon: installedDep.iconUrl
+            });
+          }
+        }
+      }
+    }
+
+    // Get ALL installed dependencies (not just orphans)
+    // Also excluding BepInExPack (already filtered from modDependencies)
+    const allInstalledDeps = modDependencies.filter(dep =>
+      profile.mods.some(m => m.fullName.startsWith(dep))
+    );
+
+    // If there are NO removable dependencies (or only BepInExPack which is filtered out),
+    // skip the complex modal and show a simple confirmation dialog.
+    if (allInstalledDeps.length === 0) {
+      const confirmed = await window.ipcRenderer.confirm('Uninstall Mod', `Uninstall ${pkg.name}?`);
+      if (confirmed) {
+        setProgressState({
+          isOpen: true,
+          title: `Uninstalling ${pkg.name}`,
+          progress: 0,
+          currentTask: 'Removing mod...'
+        });
+
+        try {
+          const installed = profile.mods.find(m => m.fullName.startsWith(pkg.full_name));
+          if (installed) {
+            await removeMod(profileIdToUse, installed.uuid4);
+          }
+          setProgressState(prev => ({ ...prev, progress: 100, currentTask: 'Done!' }));
+          setTimeout(() => setProgressState(prev => ({ ...prev, isOpen: false })), 500);
+        } catch (err: any) {
+          console.error('Failed to uninstall:', err);
+          setProgressState(prev => ({ ...prev, isOpen: false }));
+          alert(`Failed to uninstall: ${err.message}`);
+        }
+      }
+      return;
+    }
+
+    // Otherwise, open the uninstall modal
+    setUninstallModalState({
+      isOpen: true,
+      pkg,
+      orphanDeps: orphanDepsDetails,
+      allInstalledDeps,
+      profileId: profileIdToUse
+    });
+  };
+
+  // Execute the actual uninstall with given deps to remove
+  const executeUninstall = async (depsToRemove: string[]) => {
+    const { pkg, profileId } = uninstallModalState;
+    if (!pkg || !profileId) return;
+
+    const profile = profiles.find(p => p.id === profileId);
+    if (!profile) return;
+
+    // Close modal
+    setUninstallModalState(prev => ({ ...prev, isOpen: false }));
+
+    // Show progress
+    setProgressState({
+      isOpen: true,
+      title: `Uninstalling ${pkg.name}`,
+      progress: 0,
+      currentTask: 'Removing mod...'
+    });
+
+    try {
+      // Remove the main mod
+      const installed = profile.mods.find(m => m.fullName.startsWith(pkg.full_name));
+      if (installed) {
+        await removeMod(profileId, installed.uuid4);
+      }
+
+      setProgressState(prev => ({ ...prev, progress: 30 }));
+
+      // Remove selected dependencies
+      if (depsToRemove.length > 0) {
+        const total = depsToRemove.length;
+        for (let i = 0; i < depsToRemove.length; i++) {
+          const depName = depsToRemove[i];
+          const depMod = profile.mods.find(m => m.fullName.startsWith(depName));
+          if (depMod) {
+            setProgressState(prev => ({
+              ...prev,
+              progress: 30 + Math.round((i / total) * 60),
+              currentTask: `Removing ${depName}... (${i + 1}/${total})`
+            }));
+            await removeMod(profileId, depMod.uuid4);
+          }
+        }
+      }
+
+      setProgressState(prev => ({ ...prev, progress: 100, currentTask: 'Done!' }));
+      setTimeout(() => setProgressState(prev => ({ ...prev, isOpen: false })), 500);
+    } catch (err: any) {
+      console.error('Failed to uninstall:', err);
+      setProgressState(prev => ({ ...prev, isOpen: false }));
+      alert(`Failed to uninstall: ${err.message}`);
     }
   };
 
@@ -831,17 +1019,7 @@ function App() {
             packages={packages}
             installedMods={activeProfile?.mods || []}
             onInstall={handleInstallMod}
-            onUninstall={async (pkg) => {
-              if (!activeProfileId) return;
-              const confirmed = await window.ipcRenderer.confirm('Uninstall Mod', `Uninstall ${pkg.name}?`);
-              if (confirmed) {
-                // Find the installed mod UUID
-                const installed = activeProfile?.mods.find(m => m.fullName.startsWith(pkg.full_name));
-                if (installed) {
-                  await removeMod(activeProfileId, installed.uuid4);
-                }
-              }
-            }}
+            onUninstall={handleUninstallWithDependencies}
             onModClick={setSelectedMod}
             onLoadMore={handleLoadMore}
             isLoadingMore={loadingMods}
@@ -868,6 +1046,7 @@ function App() {
           mod={selectedMod.versions[0]}
           isOpen={!!selectedMod}
           gameId={selectedCommunity || ''}
+          installedMods={activeProfileId ? profiles.find(p => p.id === activeProfileId)?.mods || [] : []}
           onClose={() => setSelectedMod(null)}
           onInstall={() => {
             if (activeProfileId) {
@@ -880,16 +1059,9 @@ function App() {
             }
           }}
           onUninstall={async () => {
-            if (!activeProfileId) return;
-            const confirmed = await window.ipcRenderer.confirm('Uninstall Mod', `Uninstall ${selectedMod.name}?`);
-            if (confirmed) {
-              const profile = profiles.find(p => p.id === activeProfileId);
-              const installed = profile?.mods.find(m => m.fullName.startsWith(selectedMod.full_name));
-              if (installed) {
-                await removeMod(activeProfileId, installed.uuid4);
-                setSelectedMod(null); // Close modal after uninstall
-              }
-            }
+            if (!activeProfileId || !selectedMod) return;
+            await handleUninstallWithDependencies(selectedMod, activeProfileId);
+            setSelectedMod(null); // Close modal after uninstall
           }}
           isInstalled={
             activeProfileId
@@ -914,6 +1086,18 @@ function App() {
         title={progressState.title}
         progress={progressState.progress}
         currentTask={progressState.currentTask}
+      />
+
+      <UninstallModal
+        isOpen={uninstallModalState.isOpen}
+        modName={uninstallModalState.pkg?.name || ''}
+        modIcon={uninstallModalState.pkg?.versions[0]?.icon}
+        orphanDeps={uninstallModalState.orphanDeps}
+        allDepsCount={uninstallModalState.allInstalledDeps.length}
+        onCancel={() => setUninstallModalState(prev => ({ ...prev, isOpen: false }))}
+        onModOnly={() => executeUninstall([])}
+        onWithOrphans={() => executeUninstall(uninstallModalState.orphanDeps.map(d => d.name))}
+        onWithAllDeps={() => executeUninstall(uninstallModalState.allInstalledDeps)}
       />
 
       <SettingsModal

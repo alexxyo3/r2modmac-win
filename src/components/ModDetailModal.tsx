@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import type { PackageVersion, Package } from '../types/thunderstore'; // Import Package type if needed (checking usage)
+import type { PackageVersion, Package } from '../types/thunderstore';
+import type { InstalledMod } from '../types/profile';
 import DOMPurify from 'dompurify';
 
 interface ModDetailModalProps {
@@ -12,11 +13,12 @@ interface ModDetailModalProps {
     isInstalled: boolean;
     hasUpdate?: boolean;
     gameId: string;
+    installedMods?: InstalledMod[];
 }
 
 type Tab = 'description' | 'changelog' | 'dependencies';
 
-export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUninstall, isInstalled, hasUpdate = false, gameId }: ModDetailModalProps) {
+export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUninstall, isInstalled, hasUpdate = false, gameId, installedMods = [] }: ModDetailModalProps) {
     const [activeTab, setActiveTab] = useState<Tab>('description');
     const [readmeContent, setReadmeContent] = useState<string | null>(null);
     const [changelogContent, setChangelogContent] = useState<string | null>(null);
@@ -26,7 +28,6 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
 
     useEffect(() => {
         if (isOpen && mod && loadingKey !== mod.full_name) {
-            // Reset state on open/mod change
             setLoadingKey(mod.full_name);
             setReadmeContent(null);
             setChangelogContent(null);
@@ -43,7 +44,6 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
     const fetchDependencies = async () => {
         try {
             const result = await window.ipcRenderer.lookupPackagesByNames(gameId, mod.dependencies);
-            // Backend returns { found: Package[], unknown: string[] }
             if (result && Array.isArray(result.found)) {
                 setDependencies(result.found);
             }
@@ -55,13 +55,10 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
     const fetchContent = async (type: 'readme' | 'changelog') => {
         setLoadingContent(true);
         try {
-            // Construct Thunderstore API URL -> returns JSON with 'html' field
-            // Format: https://thunderstore.io/api/cyberstorm/package/{owner}/{name}/v/{version}/{type}/
-            // mod.full_name is "Owner-Name-Version"
             const parts = mod.full_name.split('-');
             const owner = parts[0];
             const name = parts[1];
-            const version = parts[2]; // or mod.version_number
+            const version = parts[2];
 
             const url = `https://thunderstore.io/api/cyberstorm/package/${owner}/${name}/v/${version}/${type}/`;
 
@@ -80,7 +77,6 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
         }
     };
 
-    // Fetch changelog when tab is switched, if not already loaded
     useEffect(() => {
         if (activeTab === 'changelog' && !changelogContent) {
             fetchContent('changelog');
@@ -88,6 +84,12 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
     }, [activeTab]);
 
     if (!isOpen) return null;
+
+    // Calculate total size including dependencies
+    const totalBytes = mod.file_size + dependencies.reduce((sum, dep) => sum + (dep.versions[0]?.file_size || 0), 0);
+    const sizeDisplay = dependencies.length > 0
+        ? (totalBytes >= 1024 * 1024 ? `${(totalBytes / (1024 * 1024)).toFixed(1)} MB` : `${(totalBytes / 1024).toFixed(0)} KB`)
+        : `${(mod.file_size / 1024).toFixed(0)} KB`;
 
     return (
         <div
@@ -102,11 +104,7 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
                 <div className="flex items-start gap-4 p-6 border-b border-gray-700 bg-gray-900/50 flex-shrink-0">
                     <div className="w-20 h-20 bg-gray-900 rounded-lg flex-shrink-0 overflow-hidden border border-gray-700 relative group">
                         {mod.icon ? (
-                            <img
-                                src={mod.icon}
-                                alt={mod.name}
-                                className="w-full h-full object-cover"
-                            />
+                            <img src={mod.icon} alt={mod.name} className="w-full h-full object-cover" />
                         ) : (
                             <div className="w-full h-full flex items-center justify-center text-3xl font-bold text-gray-600">
                                 {mod.name[0]}
@@ -165,11 +163,12 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
                                 </svg>
                                 {mod.downloads.toLocaleString()}
                             </span>
-                            <span className="flex items-center gap-1">
+                            <span className="flex items-center gap-1" title={dependencies.length > 0 ? `Package: ${(mod.file_size / 1024).toFixed(0)} KB + ${dependencies.length} dependencies` : undefined}>
                                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
                                 </svg>
-                                {(mod.file_size / 1024).toFixed(0)} KB
+                                {sizeDisplay}
+                                {dependencies.length > 0 && <span className="text-gray-600 text-[10px]">(total)</span>}
                             </span>
                         </div>
                     </div>
@@ -188,12 +187,17 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
                         <button
                             key={tab}
                             onClick={() => setActiveTab(tab)}
-                            className={`py-3 text-sm font-medium border-b-2 transition-colors capitalize ${activeTab === tab
+                            className={`py-3 text-sm font-medium border-b-2 transition-colors capitalize flex items-center gap-2 ${activeTab === tab
                                 ? 'text-blue-400 border-blue-400'
                                 : 'text-gray-400 border-transparent hover:text-gray-200'
                                 }`}
                         >
                             {tab}
+                            {tab === 'dependencies' && mod.dependencies?.length > 0 && (
+                                <span className={`text-xs px-1.5 py-0.5 rounded-full ${activeTab === tab ? 'bg-blue-500/20 text-blue-300' : 'bg-gray-700 text-gray-400'}`}>
+                                    {mod.dependencies.length}
+                                </span>
+                            )}
                         </button>
                     ))}
                 </div>
@@ -282,6 +286,11 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
                                                         <span className="bg-gray-700 px-1.5 py-0.5 rounded text-gray-400 text-xs">
                                                             v{dep.versions[0]?.version_number}
                                                         </span>
+                                                        {installedMods.some(m => m.fullName.startsWith(dep.full_name)) && (
+                                                            <span className="bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded text-xs font-medium">
+                                                                Installed
+                                                            </span>
+                                                        )}
                                                     </div>
                                                     <p className="text-gray-500 text-xs truncate max-w-[300px]">{dep.versions[0]?.description}</p>
                                                 </div>
@@ -290,7 +299,6 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
                                     ))}
                                 </div>
                             ) : (
-                                // Fallback if lookup failed or still loading or no deps
                                 mod.dependencies && mod.dependencies.length > 0 ? (
                                     <div className="space-y-2 opacity-50">
                                         {mod.dependencies.map((dep, idx) => (
@@ -312,9 +320,6 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
 
                 {/* Footer with Actions */}
                 <div className="p-6 border-t border-gray-700 bg-gray-900/50 flex gap-3 flex-shrink-0">
-                    {activeTab === 'description' && (
-                        <div className="absolute top-0 right-0 hidden"></div> // Spacer hack if needed
-                    )}
                     {isInstalled && onUninstall && (
                         <button
                             onClick={() => {
@@ -347,7 +352,6 @@ export function ModDetailModal({ mod, isOpen, onClose, onInstall, onUpdate, onUn
                     >
                         {hasUpdate ? 'Update' : isInstalled ? 'Installed' : 'Install Mod'}
                     </button>
-
                 </div>
             </div>
         </div>
