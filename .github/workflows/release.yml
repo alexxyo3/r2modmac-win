@@ -55,15 +55,38 @@ jobs:
             echo "Version already matches, skipping npm version."
           fi
 
-      - name: Build Tauri app (${{ matrix.target.name }})
-        run: npm run tauri build -- --target ${{ matrix.target.rust-target }}
+      - name: Install create-dmg
+        if: matrix.target.name != 'Windows'
+        run: brew install create-dmg
 
+      - name: Build Tauri app (${{ matrix.target.name }})
+        run: npm run tauri build -- --target ${{ matrix.target.rust-target }} --bundles app
+
+      - name: Create Custom DMG
+        run: |
+          mkdir -p dmg_root
+          cp -r src-tauri/target/${{ matrix.target.rust-target }}/release/bundle/macos/r2modmac.app dmg_root/
+          cp UNVERIFIED_APP_INSTRUCTIONS.txt dmg_root/
+          
+          # Create DMG
+          create-dmg \
+            --volname "r2modmac" \
+            --volicon "src-tauri/icons/icon.icns" \
+            --window-pos 200 120 \
+            --window-size 800 500 \
+            --icon-size 100 \
+            --icon "r2modmac.app" 200 190 \
+            --hide-extension "r2modmac.app" \
+            --app-drop-link 600 185 \
+            --icon "UNVERIFIED_APP_INSTRUCTIONS.txt" 400 350 \
+            "r2modmac_${{ matrix.target.arch }}.dmg" \
+            "dmg_root"
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
           name: dmg-${{ matrix.target.arch }}
-          path: src-tauri/target/${{ matrix.target.rust-target }}/release/bundle/dmg/*.dmg
+          path: r2modmac_${{ matrix.target.arch }}.dmg
           retention-days: 1
 
   release:

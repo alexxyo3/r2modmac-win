@@ -1,0 +1,19 @@
+⚠️ IMPORTANT: READ IF APP DOES NOT OPEN ⚠️
+
+This application is unsigned because it was compiled using GitHub Actions.
+
+If you see "App is damaged and can't be opened" or similar errors,
+it's because macOS prevents unsigned applications from running by default.
+
+TO FIX THIS:
+
+1. Drag the "r2modmac.app" into the Applications folder.
+2. Open the "Terminal" app (Cmd+Space, type "Terminal").
+3. Copy and paste the following command and press Enter:
+
+   sudo find /Applications/r2modmac.app -exec xattr -c {} \;
+
+4. Enter your system password if prompted and press Enter.
+5. You can now open the app normally!
+
+(You will need to repeat this process every time you update the app.)
