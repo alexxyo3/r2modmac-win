@@ -10,9 +10,9 @@ export const tauriAPI: IElectronAPI = {
     // Placeholder implementations for now
     selectFolder: async () => invoke<string | null>('select_folder'),
     selectFile: async (filters) => invoke<string | null>('select_file', { filters }),
-    installMod: async (profileId, downloadUrl, modName) => {
+    installMod: async (profileId, downloadUrl, modName, gamePath, useProfileCache) => {
         try {
-            await invoke('install_mod', { profileId, downloadUrl, modName });
+            await invoke('install_mod', { profileId, downloadUrl, modName, gamePath, useProfileCache: useProfileCache ?? false });
             return { success: true };
         } catch (e) {
             return { success: false, error: String(e) };
@@ -61,7 +61,7 @@ export const tauriAPI: IElectronAPI = {
     importProfile: async (code) => invoke<any>('import_profile', { code }),
     importProfileFromFile: async (path) => invoke<any>('import_profile_from_file', { path }),
     shareProfile: async (profileId) => invoke<string>('share_profile', { profileId }),
-    openModFolder: async (profileId, modName) => invoke('open_mod_folder', { profileId, modName }),
+    openModFolder: async (profileId, modName, gameIdentifier) => invoke('open_mod_folder', { profileId, modName, gameIdentifier }),
     exportProfile: async (profileId) => {
         try {
             return await invoke<any>('export_profile', { profileId });
@@ -103,5 +103,14 @@ export const tauriAPI: IElectronAPI = {
     },
     installUpdate: async (downloadUrl: string) => {
         return await invoke('install_update', { downloadUrl });
+    },
+    syncProfileToGame: async (profileId: string, gameIdentifier: string, useLegacyCache?: boolean) => {
+        return await invoke<{ removed: number; to_install: string[]; already_installed: number; cached: number }>('sync_profile_to_game', { profileId, gameIdentifier, useLegacyCache: useLegacyCache ?? false });
+    },
+    copyModFromCache: async (profileId: string, modName: string, gamePath: string) => {
+        return await invoke<{ success: boolean; copied: boolean }>('copy_mod_from_cache', { profileId, modName, gamePath });
+    },
+    clearProfileCache: async () => {
+        return await invoke<{ cleared: number; bytes_freed: number }>('clear_profile_cache', {});
     }
 };

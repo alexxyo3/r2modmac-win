@@ -1,4 +1,4 @@
-use tauri::{command, AppHandle, Manager};
+use tauri::{command, AppHandle, Manager, Emitter};
 use std::{fs, sync::{Arc, Mutex}, collections::HashMap};
 use serde::{Deserialize, Serialize};
 
@@ -112,6 +112,8 @@ struct Settings {
     favorite_games: Vec<String>,
     #[serde(default)]
     game_paths: HashMap<String, String>,
+    #[serde(default)]
+    legacy_install_mode: bool,  // If true, install directly to game (old behavior)
 }
 
 impl Settings {
@@ -121,6 +123,7 @@ impl Settings {
             steam_path: None,
             favorite_games: Vec::new(),
             game_paths: HashMap::new(),
+            legacy_install_mode: false,  // New mode by default
         }
     }
 }
@@ -532,11 +535,34 @@ async fn install_to_game(app: AppHandle, game_identifier: String, profile_id: St
                 let dst_path = dest_bepinex.join(&name);
                 
                 if name == "plugins" {
-                    // Handle plugins specially - only copy enabled mods
+                    // Handle plugins specially - use SYMLINKS to save disk space!
                     if !dst_path.exists() {
                         fs::create_dir_all(&dst_path).map_err(|e| e.to_string())?;
                     }
                     
+                    // First, clean up any plugins in destination that are no longer in source or are disabled
+                    if let Ok(dest_entries) = fs::read_dir(&dst_path) {
+                        for dest_entry in dest_entries.filter_map(|e| e.ok()) {
+                            let dest_plugin_name = dest_entry.file_name().to_string_lossy().to_string();
+                            let source_plugin_path = src_path.join(&dest_plugin_name);
+                            let is_disabled = disabled_set.iter().any(|d| dest_plugin_name.to_lowercase().contains(d));
+                            
+                            // Remove if disabled or not in source
+                            if is_disabled || !source_plugin_path.exists() {
+                                let dest_plugin_path = dest_entry.path();
+                                if dest_plugin_path.is_symlink() {
+                                    let _ = fs::remove_file(&dest_plugin_path);
+                                } else if dest_plugin_path.is_dir() {
+                                    let _ = fs::remove_dir_all(&dest_plugin_path);
+                                } else {
+                                    let _ = fs::remove_file(&dest_plugin_path);
+                                }
+                                eprintln!("[install_to_game] Removed old/disabled plugin: {}", dest_plugin_name);
+                            }
+                        }
+                    }
+                    
+                    // Now create symlinks for enabled plugins
                     if let Ok(plugin_entries) = fs::read_dir(&src_path) {
                         for plugin_entry in plugin_entries.filter_map(|e| e.ok()) {
                             let plugin_name = plugin_entry.file_name().to_string_lossy().to_string();
@@ -550,15 +576,37 @@ async fn install_to_game(app: AppHandle, game_identifier: String, profile_id: St
                             }
                             
                             let plugin_dst = dst_path.join(&plugin_name);
-                            if plugin_entry.path().is_dir() {
-                                copy_dir_recursive(&plugin_entry.path(), &plugin_dst)
-                                    .map_err(|e| format!("Failed to copy plugin {}: {}", plugin_name, e))?;
-                            } else {
-                                if plugin_dst.exists() {
+                            let plugin_src = plugin_entry.path();
+                            
+                            // Remove existing file/dir/symlink if present
+                            if plugin_dst.exists() || plugin_dst.is_symlink() {
+                                if plugin_dst.is_symlink() {
+                                    let _ = fs::remove_file(&plugin_dst);
+                                } else if plugin_dst.is_dir() {
+                                    let _ = fs::remove_dir_all(&plugin_dst);
+                                } else {
                                     let _ = fs::remove_file(&plugin_dst);
                                 }
-                                fs::copy(&plugin_entry.path(), &plugin_dst)
-                                    .map_err(|e| format!("Failed to copy plugin file {}: {}", plugin_name, e))?;
+                            }
+                            
+                            // Create symlink instead of copying
+                            #[cfg(unix)]
+                            {
+                                std::os::unix::fs::symlink(&plugin_src, &plugin_dst)
+                                    .map_err(|e| format!("Failed to create symlink for {}: {}", plugin_name, e))?;
+                                eprintln!("[install_to_game] Created symlink: {} -> {:?}", plugin_name, plugin_src);
+                            }
+                            
+                            #[cfg(windows)]
+                            {
+                                // Fallback to copy on Windows (symlinks require admin)
+                                if plugin_src.is_dir() {
+                                    copy_dir_recursive(&plugin_src, &plugin_dst)
+                                        .map_err(|e| format!("Failed to copy plugin {}: {}", plugin_name, e))?;
+                                } else {
+                                    fs::copy(&plugin_src, &plugin_dst)
+                                        .map_err(|e| format!("Failed to copy plugin file {}: {}", plugin_name, e))?;
+                                }
                             }
                         }
                     }
@@ -660,8 +708,160 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
     Ok(())
 }
 
+/// Sync game folder to match profile's mod list
+/// Removes mods not in profile, keeps common ones (no re-download needed)
+/// If use_legacy_cache is true, also copies mods from game to profile cache
+#[command]
+async fn sync_profile_to_game(app: AppHandle, profile_id: String, game_identifier: String, use_legacy_cache: Option<bool>) -> Result<serde_json::Value, String> {
+    let use_cache = use_legacy_cache.unwrap_or(false);
+    
+    // 1. Get game path
+    let game_path_str = get_game_path(app.clone(), game_identifier.clone()).await?
+        .ok_or("Game path not configured. Please set it in Settings.")?;
+    let game_path = std::path::Path::new(&game_path_str);
+    let game_plugins = game_path.join("BepInEx").join("plugins");
+    
+    // Profile cache path
+    let profile_dir = app.path().app_data_dir().map_err(|e| e.to_string())?
+        .join("profiles").join(&profile_id);
+    let profile_plugins = profile_dir.join("BepInEx").join("plugins");
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
+    eprintln!("[sync_profile_to_game] Syncing profile {} to game {:?} (legacy_cache: {})", profile_id, game_path, use_cache);
+
+    // 2. Read profile mods from profiles.json
+    let profiles_path = app.path().app_data_dir().unwrap().join("profiles.json");
+    let profiles_data = fs::read_to_string(&profiles_path).map_err(|e| e.to_string())?;
+    let profiles: Vec<serde_json::Value> = serde_json::from_str(&profiles_data).map_err(|e| e.to_string())?;
+    
+    let profile = profiles.iter()
+        .find(|p| p["id"].as_str() == Some(&profile_id))
+        .ok_or("Profile not found")?;
+    
+    // Get list of mod names from profile (format: "Author-ModName-Version")
+    // We keep the full name for matching
+    let profile_mod_full_names: Vec<String> = profile["mods"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|m| m["fullName"].as_str().map(|s| s.to_string()))
+        .collect();
+    
+    // Also create a set of "Author-ModName" keys for fuzzy matching
+    let profile_mod_keys: Vec<String> = profile_mod_full_names.iter()
+        .map(|s| {
+            let parts: Vec<&str> = s.split('-').collect();
+            if parts.len() >= 2 {
+                format!("{}-{}", parts[0], parts[1])
+            } else {
+                s.clone()
+            }
+        })
+        .collect();
+
+    eprintln!("[sync_profile_to_game] Profile has {} mods", profile_mod_full_names.len());
+
+    // 3. Scan game plugins folder for currently installed mods
+    // Store both the folder name AND the derived key
+    let mut game_mod_folders: Vec<(String, String)> = vec![]; // (folder_name, author-modname key)
+    if game_plugins.exists() {
+        if let Ok(entries) = fs::read_dir(&game_plugins) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                if entry.path().is_dir() {
+                    let folder_name = entry.file_name().to_string_lossy().to_string();
+                    // Extract "Author-ModName" from folder (format: Author-ModName-Version)
+                    let parts: Vec<&str> = folder_name.split('-').collect();
+                    let mod_key = if parts.len() >= 2 {
+                        format!("{}-{}", parts[0], parts[1])
+                    } else {
+                        folder_name.clone()
+                    };
+                    game_mod_folders.push((folder_name, mod_key));
+                }
+            }
+        }
+    }
+
+    eprintln!("[sync_profile_to_game] Game has {} mods installed", game_mod_folders.len());
+
+    // 4. Calculate diff using the Author-ModName keys for comparison
+    
+    // to_remove: in game but not in profile (by key)
+    let to_remove: Vec<&(String, String)> = game_mod_folders.iter()
+        .filter(|(_, gm_key)| !profile_mod_keys.iter().any(|pm_key| pm_key.to_lowercase() == gm_key.to_lowercase()))
+        .collect();
+
+    // to_install: in profile but not in game (by key)
+    // Special case: BepInExPack installs to game root, not plugins - check if BepInEx folder exists
+    let bepinex_installed = game_path.join("BepInEx").join("core").exists();
+    
+    let to_install: Vec<&String> = profile_mod_keys.iter()
+        .filter(|pm_key| {
+            // Skip BepInExPack if BepInEx is already installed
+            if pm_key.to_lowercase().contains("bepinex") && bepinex_installed {
+                return false;
+            }
+            // Check if not already in game plugins
+            !game_mod_folders.iter().any(|(_, gm_key)| gm_key.to_lowercase() == pm_key.to_lowercase())
+        })
+        .collect();
+
+    eprintln!("[sync_profile_to_game] To remove: {:?}, To install: {:?}", to_remove.len(), to_install.len());
+
+    // 5. Remove mods not in profile (we have the exact folder names from the tuple)
+    let mut removed = 0;
+    for (folder_name, _key) in &to_remove {
+        let folder_path = game_plugins.join(folder_name);
+        if folder_path.exists() {
+            eprintln!("[sync_profile_to_game] Removing: {}", folder_name);
+            let _ = fs::remove_dir_all(&folder_path);
+            removed += 1;
+        }
+    }
+
+    // 6. If legacy cache enabled, copy mods from game to profile cache (reverse sync)
+    let mut cached = 0;
+    if use_cache && game_plugins.exists() {
+        // Create profile plugins dir if needed
+        if !profile_plugins.exists() {
+            let _ = fs::create_dir_all(&profile_plugins);
+        }
+        
+        // Iterate game mods and copy to cache if not present
+        if let Ok(entries) = fs::read_dir(&game_plugins) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                if entry.path().is_dir() {
+                    let folder_name = entry.file_name().to_string_lossy().to_string();
+                    let cache_path = profile_plugins.join(&folder_name);
+                    
+                    // Only copy if not already cached
+                    if !cache_path.exists() {
+                        eprintln!("[sync_profile_to_game] Caching mod from game: {}", folder_name);
+                        if copy_dir_recursive(&entry.path(), &cache_path).is_ok() {
+                            cached += 1;
+                        }
+                    }
+                }
+            }
+        }
+        
+        if cached > 0 {
+            eprintln!("[sync_profile_to_game] Cached {} mods from game to profile", cached);
+        }
+    }
+
+    // 7. Return info about what needs to be installed (frontend will handle download)
+    let to_install_names: Vec<String> = to_install.iter().map(|s| s.to_string()).collect();
+    let already_installed = game_mod_folders.len() - removed;
+
+    Ok(serde_json::json!({
+        "removed": removed,
+        "to_install": to_install_names,
+        "already_installed": already_installed,
+        "cached": cached
+    }))
+}
+
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::default().build())
@@ -706,17 +906,70 @@ pub fn run() {
             fetch_text_content,
             check_update,
             install_update,
+            sync_profile_to_game,
+            copy_mod_from_cache,
+            clear_profile_cache,
         ])
         .setup(|app| {
             use chrono::Datelike;
             use tauri::menu::{MenuBuilder, SubmenuBuilder, MenuItemBuilder, PredefinedMenuItem};
             use tauri::Manager; // Ensure Manager is imported for .path()
 
+            // MIGRATION: Rename old data directory (com.r2modmac.app) to new one (com.r2modmac) if needed
+            // This handles the transition from .app suffix which confused macOS
+            if let Ok(new_data_dir) = app.path().app_data_dir() {
+                if let Some(parent_dir) = new_data_dir.parent() {
+                    let old_data_dir = parent_dir.join("com.r2modmac.app");
+                    
+                    // Only migrate if old exists and new does NOT exist
+                    if old_data_dir.exists() && !new_data_dir.exists() {
+                        eprintln!("[startup] MIGRATION: Renaming old data dir {:?} to {:?}", old_data_dir, new_data_dir);
+                        if let Err(e) = std::fs::rename(&old_data_dir, &new_data_dir) {
+                            eprintln!("[startup] MIGRATION FAILED: {}", e);
+                        } else {
+                            eprintln!("[startup] MIGRATION SUCCESS");
+                        }
+                    }
+                }
+            }
+
             // Clear chunks cache on startup to keep app light
             if let Ok(cache_dir) = app.path().app_cache_dir() {
                 let chunks_dir = cache_dir.join("chunks");
                 if chunks_dir.exists() {
                     let _ = std::fs::remove_dir_all(&chunks_dir);
+                }
+            }
+
+            // Auto-cleanup old profile cache (BepInEx folders) - ONLY if legacy mode is OFF
+            // When legacy mode is ON, we keep the cache for faster profile switching
+            if let Ok(data_dir) = app.path().app_data_dir() {
+                // Load settings to check legacy mode
+                let settings = load_settings_impl(&app.handle());
+                
+                if !settings.legacy_install_mode {
+                    // Only clean if legacy mode is OFF
+                    let profiles_dir = data_dir.join("profiles");
+                    if profiles_dir.exists() {
+                        if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
+                            for entry in entries.filter_map(|e| e.ok()) {
+                                let profile_path = entry.path();
+                                if profile_path.is_dir() {
+                                    // Remove BepInEx folder from profile (old cache)
+                                    let bepinex_path = profile_path.join("BepInEx");
+                                    if bepinex_path.exists() {
+                                        eprintln!("[startup] Cleaning old profile cache: {:?}", bepinex_path);
+                                        let _ = std::fs::remove_dir_all(&bepinex_path);
+                                    }
+                                    // Also remove winhttp.dll and doorstop_config.ini from profile
+                                    let _ = std::fs::remove_file(profile_path.join("winhttp.dll"));
+                                    let _ = std::fs::remove_file(profile_path.join("doorstop_config.ini"));
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    eprintln!("[startup] Legacy mode ON - keeping profile cache");
                 }
             }
 
@@ -740,6 +993,10 @@ pub fn run() {
                 .build()?;
             
             // Build the full menu bar (macOS needs app name submenu first)
+            let preferences_item = MenuItemBuilder::with_id("preferences", "Preferences...")
+                .accelerator("CommandOrControl+,")
+                .build(app)?;
+            
             let app_menu = SubmenuBuilder::new(app, "r2modmac")
                 .item(&PredefinedMenuItem::about(
                     app,
@@ -751,6 +1008,8 @@ pub fn run() {
                             .build()
                     )
                 )?)
+                .separator()
+                .item(&preferences_item)
                 .separator()
                 .item(&PredefinedMenuItem::hide(app, Some("Hide r2modmac"))?)
                 .item(&PredefinedMenuItem::hide_others(app, Some("Hide Others"))?)
@@ -785,8 +1044,12 @@ pub fn run() {
             
             Ok(())
         })
-        .on_menu_event(|_app, event| {
+        .on_menu_event(|app, event| {
             match event.id().as_ref() {
+                "preferences" => {
+                    // Emit event to frontend to show preferences modal
+                    let _ = app.emit("show-preferences", ());
+                }
                 "report_issue" => {
                     let _ = open::that("https://github.com/Zard-Studios/r2modmac/issues/new");
                 }
@@ -896,26 +1159,32 @@ async fn read_image(path: String) -> Result<Option<String>, String> {
 }
 
 #[command]
-async fn install_mod(app: AppHandle, profile_id: String, download_url: String, mod_name: String) -> Result<serde_json::Value, String> {
-    let profile_dir = app.path().app_data_dir().unwrap().join("profiles").join(&profile_id);
-    let plugins_dir = profile_dir.join("BepInEx").join("plugins");
+async fn install_mod(app: AppHandle, profile_id: String, download_url: String, mod_name: String, game_path: String, use_profile_cache: Option<bool>) -> Result<serde_json::Value, String> {
+    // Install DIRECTLY to game folder
+    let game_dir = std::path::Path::new(&game_path);
+    let plugins_dir = game_dir.join("BepInEx").join("plugins");
     let mod_dir = plugins_dir.join(&mod_name);
+
+    eprintln!("[install_mod] Installing {} directly to game: {:?}", mod_name, game_dir);
 
     // Download
     let response = reqwest::get(&download_url).await.map_err(|e| e.to_string())?;
     let bytes = response.bytes().await.map_err(|e| e.to_string())?;
-    let cursor = std::io::Cursor::new(bytes);
-
-    // Unzip
-    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
     
     // Check if this is BepInExPack by looking for "BepInExPack" folder at root
+    let cursor = std::io::Cursor::new(&bytes);
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
     let is_bepinex_pack = (0..archive.len()).any(|i| {
         archive.by_index(i).ok().map(|f| f.name().starts_with("BepInExPack/")).unwrap_or(false)
     });
 
+    // Install to game folder
+    let cursor = std::io::Cursor::new(&bytes);
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
+
     if is_bepinex_pack {
-        // Install BepInExPack to profile root
+        // Install BepInExPack to GAME root (not profile!)
+        eprintln!("[install_mod] Detected BepInExPack - installing to game root");
         for i in 0..archive.len() {
             let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
             let name = file.name().to_string();
@@ -925,7 +1194,7 @@ async fn install_mod(app: AppHandle, profile_id: String, download_url: String, m
                 let relative_path = &name["BepInExPack/".len()..];
                 if relative_path.is_empty() { continue; }
                 
-                let outpath = profile_dir.join(relative_path);
+                let outpath = game_dir.join(relative_path);
                 
                 if name.ends_with('/') {
                     fs::create_dir_all(&outpath).map_err(|e| e.to_string())?;
@@ -941,8 +1210,7 @@ async fn install_mod(app: AppHandle, profile_id: String, download_url: String, m
             }
         }
     } else {
-        // Normal mod installation to plugins/{mod_name}
-        // Create directories
+        // Normal mod installation to game/BepInEx/plugins/{mod_name}
         fs::create_dir_all(&mod_dir).map_err(|e| e.to_string())?;
 
         for i in 0..archive.len() {
@@ -966,15 +1234,130 @@ async fn install_mod(app: AppHandle, profile_id: String, download_url: String, m
         }
     }
 
+    // LEGACY MODE: Also save to profile cache folder
+    if use_profile_cache.unwrap_or(false) {
+        let profile_dir = app.path().app_data_dir().map_err(|e| e.to_string())?
+            .join("profiles").join(&profile_id);
+        let profile_plugins_dir = profile_dir.join("BepInEx").join("plugins");
+        let profile_mod_dir = profile_plugins_dir.join(&mod_name);
+
+        eprintln!("[install_mod] LEGACY: Also caching to profile: {:?}", profile_dir);
+
+        let cursor = std::io::Cursor::new(&bytes);
+        let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
+
+        if is_bepinex_pack {
+            // Cache BepInExPack to profile root
+            for i in 0..archive.len() {
+                let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+                let name = file.name().to_string();
+                
+                if name.starts_with("BepInExPack/") {
+                    let relative_path = &name["BepInExPack/".len()..];
+                    if relative_path.is_empty() { continue; }
+                    
+                    let outpath = profile_dir.join(relative_path);
+                    
+                    if name.ends_with('/') {
+                        let _ = fs::create_dir_all(&outpath);
+                    } else {
+                        if let Some(p) = outpath.parent() {
+                            let _ = fs::create_dir_all(p);
+                        }
+                        if let Ok(mut outfile) = fs::File::create(&outpath) {
+                            let _ = std::io::copy(&mut file, &mut outfile);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Cache normal mod to profile/BepInEx/plugins/{mod_name}
+            eprintln!("[install_mod] Creating profile cache dir: {:?}", profile_mod_dir);
+            if let Err(e) = fs::create_dir_all(&profile_mod_dir) {
+                eprintln!("[install_mod] ERROR creating profile cache dir: {}", e);
+            }
+
+            for i in 0..archive.len() {
+                let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+                let outpath = match file.enclosed_name() {
+                    Some(path) => profile_mod_dir.join(path),
+                    None => continue,
+                };
+
+                if (*file.name()).ends_with('/') {
+                    let _ = fs::create_dir_all(&outpath);
+                } else {
+                    if let Some(p) = outpath.parent() {
+                        let _ = fs::create_dir_all(p);
+                    }
+                    if let Ok(mut outfile) = fs::File::create(&outpath) {
+                        let _ = std::io::copy(&mut file, &mut outfile);
+                    }
+                }
+            }
+        }
+    }
+
+    eprintln!("[install_mod] Successfully installed {} to game folder", mod_name);
     Ok(serde_json::json!({ "success": true }))
 }
 
+/// Copy a mod from profile cache to game folder (for instant profile switching in legacy mode)
+#[command]
+async fn copy_mod_from_cache(app: AppHandle, profile_id: String, mod_name: String, game_path: String) -> Result<serde_json::Value, String> {
+    let profile_dir = app.path().app_data_dir().map_err(|e| e.to_string())?
+        .join("profiles").join(&profile_id);
+    let profile_plugins_dir = profile_dir.join("BepInEx").join("plugins");
+    
+    let game_dir = std::path::Path::new(&game_path);
+    let game_plugins_dir = game_dir.join("BepInEx").join("plugins");
+    
+    // Find the mod folder in profile cache (case insensitive partial match)
+    let mod_name_lower = mod_name.to_lowercase();
+    
+    if let Ok(entries) = fs::read_dir(&profile_plugins_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let folder_name = entry.file_name().to_string_lossy().to_string();
+            
+            if folder_name.to_lowercase().contains(&mod_name_lower) || 
+               mod_name_lower.contains(&folder_name.to_lowercase()) {
+                let src_path = entry.path();
+                let dst_path = game_plugins_dir.join(&folder_name);
+                
+                if src_path.is_dir() {
+                    eprintln!("[copy_mod_from_cache] Copying {} from cache to game", folder_name);
+                    
+                    // Ensure target dir exists
+                    fs::create_dir_all(&game_plugins_dir).map_err(|e| e.to_string())?;
+                    
+                    // Remove existing if present
+                    if dst_path.exists() {
+                        let _ = fs::remove_dir_all(&dst_path);
+                    }
+                    
+                    // Copy
+                    copy_dir_recursive(&src_path, &dst_path).map_err(|e| e.to_string())?;
+                    
+                    return Ok(serde_json::json!({ "success": true, "copied": true }));
+                }
+            }
+        }
+    }
+    
+    // Not found in cache
+    eprintln!("[copy_mod_from_cache] Mod {} not found in profile cache", mod_name);
+    Ok(serde_json::json!({ "success": false, "copied": false }))
+}
 
 
 #[command]
-async fn open_mod_folder(app: AppHandle, profile_id: String, mod_name: String) -> Result<(), String> {
-    let profile_dir = app.path().app_data_dir().unwrap().join("profiles").join(&profile_id);
-    let plugins_dir = profile_dir.join("BepInEx").join("plugins");
+async fn open_mod_folder(app: AppHandle, _profile_id: String, mod_name: String, game_identifier: String) -> Result<(), String> {
+    // Open mod folder in GAME directory (not cache!)
+    let game_path_str = get_game_path(app.clone(), game_identifier).await?
+        .ok_or("Game path not configured. Please set it in Settings.")?;
+    
+    let game_path = std::path::Path::new(&game_path_str);
+    let plugins_dir = game_path.join("BepInEx").join("plugins");
     
     if plugins_dir.exists() {
         for entry in walkdir::WalkDir::new(&plugins_dir)
@@ -992,9 +1375,11 @@ async fn open_mod_folder(app: AppHandle, profile_id: String, mod_name: String) -
                 }
             }
         }
+        // If mod not found, open plugins folder
         let _ = open::that(&plugins_dir);
     } else {
-        let _ = open::that(&profile_dir);
+        // Open game root if plugins doesn't exist
+        let _ = open::that(game_path);
     }
     Ok(())
 }
@@ -1616,13 +2001,12 @@ async fn delete_profile_folder(app: AppHandle, profile_id: String, game_identifi
 
 #[command]
 async fn toggle_mod(app: AppHandle, profile_id: String, mod_name: String, enabled: bool, game_identifier: Option<String>) -> Result<(), String> {
-    let profile_dir = app.path().app_data_dir().unwrap().join("profiles").join(&profile_id);
-    let plugins_dir = profile_dir.join("BepInEx").join("plugins");
+    eprintln!("[toggle_mod] Toggle mod: {} enabled: {} in profile: {}", mod_name, enabled, profile_id);
     
-    // Get game path for live sync
+    // Get game path for sync (optional - toggle still works without it)
     let game_plugins = if let Some(ref game_id) = game_identifier {
         if let Ok(Some(game_path_str)) = get_game_path(app.clone(), game_id.clone()).await {
-            Some(std::path::Path::new(&game_path_str).join("BepInEx").join("plugins"))
+            Some(std::path::Path::new(&game_path_str).to_path_buf().join("BepInEx").join("plugins"))
         } else {
             None
         }
@@ -1630,46 +2014,125 @@ async fn toggle_mod(app: AppHandle, profile_id: String, mod_name: String, enable
         None
     };
     
-    // Find the mod folder
-    if let Ok(entries) = fs::read_dir(&plugins_dir) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            let folder_name = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            
-            // Match mod folder by name (case insensitive, partial match)
-            if folder_name.to_lowercase().contains(&mod_name.to_lowercase()) && path.is_dir() {
-                eprintln!("[toggle_mod] Found mod folder: {:?}, enabled: {}", path, enabled);
-                
-                // Sync to game folder if available
-                if let Some(ref game_plugins_path) = game_plugins {
-                    let game_mod_path = game_plugins_path.join(folder_name);
-                    
-                    if enabled {
-                        // Copy mod to game folder
-                        eprintln!("[toggle_mod] Syncing enabled mod to game: {}", folder_name);
-                        if game_mod_path.exists() {
-                            let _ = fs::remove_dir_all(&game_mod_path);
-                        }
-                        copy_dir_recursive(&path, &game_mod_path)
-                            .map_err(|e| format!("Failed to sync mod to game: {}", e))?;
-                    } else {
-                        // Remove mod from game folder
-                        if game_mod_path.exists() {
-                            eprintln!("[toggle_mod] Removing disabled mod from game: {}", folder_name);
-                            fs::remove_dir_all(&game_mod_path)
-                                .map_err(|e| format!("Failed to remove mod from game: {}", e))?;
-                        }
-                    }
+    // Get profile cache path (may or may not exist depending on legacy mode)
+    let profile_dir = app.path().app_data_dir().map_err(|e| e.to_string())?
+        .join("profiles").join(&profile_id);
+    let profile_plugins_dir = profile_dir.join("BepInEx").join("plugins");
+    
+    // Find mod in profile cache OR game folder
+    let mod_name_lower = mod_name.to_lowercase();
+    let mut found_folder_name: Option<String> = None;
+    
+    // Try profile cache first
+    if profile_plugins_dir.exists() {
+        if let Ok(entries) = fs::read_dir(&profile_plugins_dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let folder_name = entry.file_name().to_string_lossy().to_string();
+                if folder_name.to_lowercase().contains(&mod_name_lower) && entry.path().is_dir() {
+                    found_folder_name = Some(folder_name);
+                    break;
                 }
-                
-                return Ok(());
             }
         }
     }
     
-    Err(format!("Mod '{}' not found in profile", mod_name))
+    // If not found in profile cache, try game folder
+    if found_folder_name.is_none() {
+        if let Some(ref game_plugins_path) = game_plugins {
+            if game_plugins_path.exists() {
+                if let Ok(entries) = fs::read_dir(game_plugins_path) {
+                    for entry in entries.filter_map(|e| e.ok()) {
+                        let folder_name = entry.file_name().to_string_lossy().to_string();
+                        if folder_name.to_lowercase().contains(&mod_name_lower) && entry.path().is_dir() {
+                            found_folder_name = Some(folder_name);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // If we have a game folder, sync the mod state
+    if let Some(ref game_plugins_path) = game_plugins {
+        if let Some(ref folder_name) = found_folder_name {
+            let game_mod_path = game_plugins_path.join(folder_name);
+            let profile_mod_path = profile_plugins_dir.join(folder_name);
+            
+            if enabled {
+                // Need to add mod to game - copy from profile cache if available
+                if profile_mod_path.exists() && !game_mod_path.exists() {
+                    eprintln!("[toggle_mod] Enabling mod - copying from cache to game: {}", folder_name);
+                    copy_dir_recursive(&profile_mod_path, &game_mod_path)
+                        .map_err(|e| format!("Failed to sync mod to game: {}", e))?;
+                }
+            } else {
+                // Remove mod from game folder (keep in cache)
+                if game_mod_path.exists() {
+                    eprintln!("[toggle_mod] Disabling mod - removing from game: {}", folder_name);
+                    fs::remove_dir_all(&game_mod_path)
+                        .map_err(|e| format!("Failed to remove mod from game: {}", e))?;
+                }
+            }
+        }
+    }
+    
+    // Always succeed - the enabled state is tracked in profiles.json, not file system
+    eprintln!("[toggle_mod] Toggle complete for mod: {}", mod_name);
+    Ok(())
+}
+
+/// Clear all profile cache (BepInEx folders) - used when switching to new mode
+#[command]
+async fn clear_profile_cache(app: AppHandle) -> Result<serde_json::Value, String> {
+    let profiles_dir = app.path().app_data_dir().map_err(|e| e.to_string())?
+        .join("profiles");
+    
+    let mut cleared = 0;
+    let mut size_freed: u64 = 0;
+    
+    if profiles_dir.exists() {
+        if let Ok(entries) = fs::read_dir(&profiles_dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                if entry.path().is_dir() {
+                    let bepinex_dir = entry.path().join("BepInEx");
+                    if bepinex_dir.exists() {
+                        // Calculate size before deleting
+                        if let Ok(size) = calculate_dir_size(&bepinex_dir) {
+                            size_freed += size;
+                        }
+                        eprintln!("[clear_profile_cache] Removing: {:?}", bepinex_dir);
+                        let _ = fs::remove_dir_all(&bepinex_dir);
+                        cleared += 1;
+                    }
+                }
+            }
+        }
+    }
+    
+    eprintln!("[clear_profile_cache] Cleared {} profile caches, freed {} bytes", cleared, size_freed);
+    
+    Ok(serde_json::json!({
+        "cleared": cleared,
+        "bytes_freed": size_freed
+    }))
+}
+
+/// Calculate directory size recursively
+fn calculate_dir_size(path: &std::path::Path) -> std::io::Result<u64> {
+    let mut size = 0;
+    if path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                size += calculate_dir_size(&path)?;
+            } else {
+                size += entry.metadata()?.len();
+            }
+        }
+    }
+    Ok(size)
 }
 
 #[command]

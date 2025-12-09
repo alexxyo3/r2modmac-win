@@ -17,7 +17,9 @@ import { useProfileStore } from './store/useProfileStore'
 import type { Community, Package, PackageVersion } from './types/thunderstore'
 import type { InstalledMod } from './types/profile'
 import { getVersion } from '@tauri-apps/api/app';
+import { listen } from '@tauri-apps/api/event';
 import { UpdateModal } from './components/UpdateModal';
+import PreferencesModal from './components/PreferencesModal';
 import type { UpdateInfo } from './types/electron';
 
 function App() {
@@ -68,6 +70,8 @@ function App() {
     profileId: null
   })
   const [showUpdateModal, setShowUpdateModal] = useState(false)
+  const [showPreferences, setShowPreferences] = useState(false)
+  const [legacyInstallMode, setLegacyInstallMode] = useState(false)
 
   const {
     profiles,
@@ -88,6 +92,22 @@ function App() {
     loadData()
     loadProfiles()
     checkForUpdates()
+
+    // Load legacy mode setting
+    window.ipcRenderer.getSettings().then((s: any) => {
+      if (s.legacy_install_mode !== undefined) {
+        setLegacyInstallMode(s.legacy_install_mode);
+      }
+    });
+
+    // Listen for preferences menu event
+    const unlisten = listen('show-preferences', () => {
+      setShowPreferences(true);
+    });
+
+    return () => {
+      unlisten.then(fn => fn());
+    };
   }, [])
 
   const checkForUpdates = async () => {
@@ -248,13 +268,15 @@ function App() {
     version: PackageVersion,
     installedCache: Set<string> = new Set(),
     targetProfileId?: string,
-    progressCounter?: { installed: number; total: number }
+    progressCounter?: { installed: number; total: number },
+    gamePath?: string
   ) => {
     if (installedCache.has(version.full_name)) return;
     installedCache.add(version.full_name);
 
     const profileIdToUse = targetProfileId || activeProfileId;
     if (!profileIdToUse) throw new Error("No profile selected");
+    if (!gamePath) throw new Error("Game path not provided");
 
     // 1. Collect all dependencies that need to be installed
     const depsToInstall: string[] = [];
@@ -301,7 +323,7 @@ function App() {
         for (const depPkg of result.found) {
           const depVersion = depPkg.versions[0];
           if (depVersion) {
-            await installModWithDependencies(depPkg, depVersion, installedCache, profileIdToUse, progressCounter);
+            await installModWithDependencies(depPkg, depVersion, installedCache, profileIdToUse, progressCounter, gamePath);
           }
         }
 
@@ -314,7 +336,7 @@ function App() {
       }
     }
 
-    // 3. Install the mod itself
+    // 3. Install the mod itself DIRECTLY to game folder
     try {
       // Update progress using shared counter if available
       if (progressCounter) {
@@ -335,7 +357,9 @@ function App() {
       const result = await window.ipcRenderer.installMod(
         profileIdToUse,
         version.download_url,
-        version.full_name
+        version.full_name,
+        gamePath,
+        true  // useProfileCache - save to profile cache in legacy mode
       );
 
       if (result.success) {
@@ -357,6 +381,9 @@ function App() {
     }
   };
 
+  // Install mod = depends on legacyInstallMode setting
+  // Legacy: download immediately to cache (old behavior)
+  // New: save metadata only, download with "Apply to Game"
   const handleInstallMod = async (pkg: Package, targetProfileId?: string) => {
     const profileIdToUse = targetProfileId || activeProfileId;
     if (!profileIdToUse) {
@@ -366,26 +393,116 @@ function App() {
 
     const version = pkg.versions[0];
 
+    // LEGACY MODE: download immediately (old behavior)
+    if (legacyInstallMode) {
+      // Check game path first
+      const gamePath = await window.ipcRenderer.getGamePath(selectedCommunity || '');
+      if (!gamePath) {
+        await window.ipcRenderer.alert(
+          "Game Path Required",
+          "Please configure the game directory in Settings before installing mods."
+        );
+        return;
+      }
+
+      setProgressState({
+        isOpen: true,
+        title: `Installing ${pkg.name}`,
+        progress: 0,
+        currentTask: 'Starting installation...'
+      });
+
+      try {
+        const progressCounter = { installed: 0, total: 1 };
+        await installModWithDependencies(pkg, version, new Set(), profileIdToUse, progressCounter, gamePath);
+        setProgressState(prev => ({ ...prev, progress: 100, currentTask: 'Done!' }));
+        setTimeout(() => setProgressState(prev => ({ ...prev, isOpen: false })), 500);
+      } catch (err: any) {
+        console.error('Failed to install mod:', err);
+        setProgressState(prev => ({ ...prev, isOpen: false }));
+        alert(`Failed to install mod: ${err.message}`);
+      }
+      return;
+    }
+
+    // NEW MODE: metadata only, no download
     setProgressState({
       isOpen: true,
-      title: `Installing ${pkg.name}`,
+      title: `Adding ${pkg.name}`,
       progress: 0,
-      currentTask: 'Starting installation...'
+      currentTask: 'Resolving dependencies...'
     });
 
     try {
-      setProgressState(prev => ({ ...prev, progress: 5, currentTask: 'Checking dependencies...' }));
-      // Initialize progress counter - starts with 1 for the main mod, will grow as deps are discovered
-      const progressCounter = { installed: 0, total: 1 };
-      await installModWithDependencies(pkg, version, new Set(), profileIdToUse, progressCounter);
-      setProgressState(prev => ({ ...prev, progress: 100, currentTask: 'Done!' }));
-      setTimeout(() => setProgressState(prev => ({ ...prev, isOpen: false })), 500);
-      // alert(`Successfully installed ${pkg.name} and dependencies`); // Removed alert
+      // Collect mod + all dependencies as metadata
+      const modsToAdd: InstalledMod[] = [];
+      const processed = new Set<string>();
+
+      const collectModAndDeps = async (_pkg: Package, ver: PackageVersion) => {
+        if (processed.has(ver.full_name)) return;
+        processed.add(ver.full_name);
+
+        // Check if already in profile
+        const profile = profiles.find(p => p.id === profileIdToUse);
+        if (profile?.mods.some(m => m.fullName === ver.full_name)) {
+          console.log(`[Add] Skipping ${ver.full_name} - already in profile`);
+          return;
+        }
+
+        // Add to list
+        modsToAdd.push({
+          uuid4: ver.uuid4,
+          fullName: ver.full_name,
+          versionNumber: ver.version_number,
+          iconUrl: ver.icon,
+          enabled: true
+        });
+
+        // Process dependencies
+        for (const depString of ver.dependencies) {
+          const parts = depString.split('-');
+          if (parts.length < 3) continue;
+          const depFullName = `${parts[0]}-${parts[1]}`;
+
+          // Check if already in profile
+          if (profile?.mods.some(m => m.fullName.startsWith(depFullName))) continue;
+          if (processed.has(depFullName)) continue;
+
+          // Lookup dependency
+          if (selectedCommunity) {
+            const result = await window.ipcRenderer.lookupPackagesByNames(selectedCommunity, [depFullName]);
+            for (const depPkg of result.found) {
+              const depVer = depPkg.versions[0];
+              if (depVer) {
+                await collectModAndDeps(depPkg, depVer);
+              }
+            }
+          }
+        }
+      };
+
+      await collectModAndDeps(pkg, version);
+
+      // Add all mods to profile (metadata only!)
+      setProgressState(prev => ({ ...prev, progress: 80, currentTask: `Adding ${modsToAdd.length} mods to profile...` }));
+
+      for (const mod of modsToAdd) {
+        addMod(profileIdToUse, mod);
+      }
+
+      console.log(`[Install] Added ${modsToAdd.length} mods to profile (metadata only, no download)`);
+      setProgressState(prev => ({ ...prev, progress: 100, currentTask: 'Done! Click "Apply to Game" to download.' }));
+      setTimeout(() => setProgressState(prev => ({ ...prev, isOpen: false })), 800);
     } catch (err: any) {
-      console.error('Failed to install mod:', err);
+      console.error('Failed to add mod:', err);
       setProgressState(prev => ({ ...prev, isOpen: false }));
-      alert(`Failed to install mod: ${err.message}`);
+      alert(`Failed to add mod: ${err.message}`);
     }
+  };
+
+  // Select profile - NO auto-sync, user must click "Apply to Game" to sync
+  const handleSelectProfile = (profileId: string) => {
+    selectProfile(profileId);
   };
 
   // Uninstall mod with option to remove orphan dependencies - Opens modal
@@ -670,6 +787,16 @@ function App() {
       // It's an r2modman profile export
       let profileName = result.name;
 
+      // Check game path FIRST - required for direct installation
+      const gamePath = await window.ipcRenderer.getGamePath(selectedCommunity || '');
+      if (!gamePath) {
+        await window.ipcRenderer.alert(
+          "Game Path Required",
+          "Please configure the game directory in Settings before importing profiles.\n\nGo to Settings → Game Directory → Set the path to your Wine/CrossOver game folder."
+        );
+        return;
+      }
+
       // Remove "Imported: " prefix if present (compatibility with r2modman)
       if (profileName.startsWith("Imported: ")) {
         profileName = profileName.substring(10);
@@ -742,7 +869,9 @@ function App() {
                 const installResult = await window.ipcRenderer.installMod(
                   newProfileId,
                   version.download_url,
-                  version.full_name
+                  version.full_name,
+                  gamePath,
+                  legacyInstallMode
                 );
 
                 if (installResult.success) {
@@ -803,14 +932,24 @@ function App() {
             <p className="text-xl text-gray-400">Select a game to begin managing your mods</p>
           </div>
 
-          <div className="mb-8">
+          <div className="flex gap-3 items-center max-w-2xl mx-auto mb-8">
             <input
-              className="w-full bg-gray-800 border border-gray-700 p-4 rounded-xl text-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-all shadow-lg"
+              className="flex-1 bg-gray-800 border border-gray-700 p-4 rounded-xl text-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-all shadow-lg"
               placeholder="Search for a game..."
               value={gameSearchQuery}
               onChange={e => setGameSearchQuery(e.target.value)}
               autoFocus
             />
+            <button
+              onClick={() => setShowPreferences(true)}
+              className="p-4 bg-gray-800 border border-gray-700 rounded-xl hover:bg-gray-700 hover:border-gray-600 transition-all text-gray-400 hover:text-white"
+              title="Preferences"
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </button>
           </div>
 
           {loading ? (
@@ -858,7 +997,7 @@ function App() {
         <ProfileList
           profiles={profiles}
           selectedGameIdentifier={selectedCommunity}
-          onSelectProfile={selectProfile}
+          onSelectProfile={handleSelectProfile}
           onCreateProfile={(name) => createProfile(name, selectedCommunity)}
           onImportProfile={handleImportProfile}
           onImportFile={handleImportFile}
@@ -878,10 +1017,10 @@ function App() {
         currentCommunity={currentCommunity || null}
         communityImage={currentCommunity ? communityImages[currentCommunity.identifier] : undefined}
         packages={packages}
-        onSelectProfile={selectProfile}
+        onSelectProfile={handleSelectProfile}
         onToggleMod={toggleMod}
         onViewModDetails={(pkg) => setSelectedMod(pkg)}
-        onOpenModFolder={(profileId, modName) => window.ipcRenderer.openModFolder(profileId, modName)}
+        onOpenModFolder={(profileId, modName) => window.ipcRenderer.openModFolder(profileId, modName, selectedCommunity || '')}
         onUninstallMod={async (mod) => {
           if (!activeProfile) return;
           const confirmed = await window.ipcRenderer.confirm('Uninstall Mod', `Uninstall ${mod.fullName}?`);
@@ -904,6 +1043,13 @@ function App() {
         onInstallToGame={async () => {
           try {
             if (!activeProfile || !currentCommunity) return;
+
+            // Get game path FIRST - needed for all installs
+            const gamePath = await window.ipcRenderer.getGamePath(currentCommunity.identifier);
+            if (!gamePath) {
+              await window.ipcRenderer.alert('Game Path Required', 'Please set the game directory in Settings first.');
+              return;
+            }
 
             // --- BEPINEX AUTO-INSTALL LOGIC START ---
             // 1. Check if BepInEx is already installed
@@ -948,7 +1094,7 @@ function App() {
                   currentTask: `Installing missing requirement: ${bepInExPkg.name}...`
                 }));
 
-                await installModWithDependencies(bepInExPkg, version, new Set(), activeProfile.id);
+                await installModWithDependencies(bepInExPkg, version, new Set(), activeProfile.id, undefined, gamePath);
 
                 console.log("[Auto-Install] BepInExPack installed successfully.");
               } else {
@@ -960,23 +1106,85 @@ function App() {
             }
             // --- BEPINEX AUTO-INSTALL LOGIC END ---
 
-            // Get list of disabled mod names for filtering
-            const disabledMods = activeProfile.mods
-              .filter(m => !m.enabled)
-              .map(m => {
-                // Extract mod name from fullName (format: "Author-ModName-Version")
-                const parts = m.fullName.split('-');
-                return parts.length >= 2 ? parts[1].toLowerCase() : m.fullName.toLowerCase();
+            console.log('Syncing profile to game...');
+
+            // Sync profile to game (removes mods not in profile, returns mods to install)
+            // Pass legacyInstallMode to enable reverse sync (copy mods from game to cache)
+            const syncResult = await window.ipcRenderer.syncProfileToGame(activeProfile.id, currentCommunity.identifier, legacyInstallMode);
+
+            // Install any missing mods
+            if (syncResult.to_install.length > 0) {
+              setProgressState({
+                isOpen: true,
+                title: 'Syncing to Game',
+                progress: 0,
+                currentTask: `Installing ${syncResult.to_install.length} missing mods...`
               });
 
-            console.log('Installing with disabled mods:', disabledMods);
-            await window.ipcRenderer.installToGame(currentCommunity.identifier, activeProfile.id, disabledMods);
-            await window.ipcRenderer.alert('Success', 'Mods applied! Launch the game via Steam to play.');
+              let installed = 0;
+              for (const modKey of syncResult.to_install) {
+                // Find mod in profile
+                const modInProfile = activeProfile.mods.find(m => {
+                  const parts = m.fullName.split('-');
+                  const key = parts.length >= 2 ? `${parts[0]}-${parts[1]}` : m.fullName;
+                  return key.toLowerCase() === modKey.toLowerCase();
+                });
+
+                if (modInProfile) {
+                  // LEGACY MODE: Try copying from cache first (INSTANT!)
+                  if (legacyInstallMode) {
+                    const cacheResult = await window.ipcRenderer.copyModFromCache(activeProfile.id, modInProfile.fullName, gamePath);
+                    if (cacheResult.copied) {
+                      // Success! Mod was copied from cache
+                      installed++;
+                      setProgressState(prev => ({
+                        ...prev,
+                        progress: Math.round((installed / syncResult.to_install.length) * 100),
+                        currentTask: `Copied from cache ${installed}/${syncResult.to_install.length}: ${modKey}`
+                      }));
+                      continue; // Skip download
+                    }
+                  }
+
+                  // Fallback: Download from Thunderstore
+                  const pkg = await window.ipcRenderer.fetchPackageByName(modInProfile.fullName, currentCommunity.identifier);
+                  if (pkg) {
+                    const version = pkg.versions.find((v: any) => v.version_number === modInProfile.versionNumber) || pkg.versions[0];
+                    await window.ipcRenderer.installMod(activeProfile.id, version.download_url, version.full_name, gamePath, legacyInstallMode);
+                  }
+                }
+                installed++;
+                setProgressState(prev => ({
+                  ...prev,
+                  progress: Math.round((installed / syncResult.to_install.length) * 100),
+                  currentTask: `Installed ${installed}/${syncResult.to_install.length}: ${modKey}`
+                }));
+              }
+              setProgressState(prev => ({ ...prev, isOpen: false }));
+            }
+
+            // Build smart success message - only show counts that are > 0
+            const removed = syncResult.removed;
+            const installed = syncResult.to_install.length;
+            const cached = syncResult.cached || 0;
+
+            let message = '';
+            if (removed === 0 && installed === 0 && cached === 0) {
+              message = 'Profile already synced! No changes needed.';
+            } else {
+              const parts: string[] = [];
+              if (removed > 0) parts.push(`${removed} removed`);
+              if (installed > 0) parts.push(`${installed} installed`);
+              if (cached > 0) parts.push(`${cached} cached`);
+              message = `Sync complete! ${parts.join(', ')}.`;
+            }
+
+            await window.ipcRenderer.alert('Success', message);
             setShowCrossOverGuide(true);
           } catch (e: any) {
-            console.error("Install to game failed:", e);
+            console.error("Sync to game failed:", e);
             setProgressState(prev => ({ ...prev, isOpen: false }));
-            alert('Error installing modpack: ' + e);
+            alert('Error syncing: ' + e);
           }
         }}
         onExportProfile={() => setShowExportModal(true)}
@@ -1151,6 +1359,21 @@ function App() {
           }}
         />
       )}
+
+      <PreferencesModal
+        isOpen={showPreferences}
+        onClose={() => setShowPreferences(false)}
+        settings={{ legacy_install_mode: legacyInstallMode }}
+        onSave={async (newSettings) => {
+          setLegacyInstallMode(newSettings.legacy_install_mode);
+          // Save to backend
+          const currentSettings = await window.ipcRenderer.getSettings();
+          await window.ipcRenderer.saveSettings({
+            ...currentSettings,
+            legacy_install_mode: newSettings.legacy_install_mode
+          });
+        }}
+      />
     </div>
   )
 }
