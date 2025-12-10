@@ -72,7 +72,7 @@ export function FilterPopover({ options, onChange, availableCategories }: Filter
         <div className="relative" ref={popoverRef}>
             <button
                 onClick={() => setIsOpen(!isOpen)}
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors ${isOpen
+                className={`flex items-center justify-center p-3 rounded-lg border transition-colors ${isOpen
                     ? 'bg-blue-600 border-blue-500 text-white'
                     : 'bg-gray-800 border-gray-700 text-gray-300 hover:text-white hover:bg-gray-700'
                     }`}
@@ -80,7 +80,7 @@ export function FilterPopover({ options, onChange, availableCategories }: Filter
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
                 </svg>
-                <span>Filter</span>
+
                 {activeFilterCount > 0 && (
                     <span className="bg-blue-500 text-white text-xs px-1.5 py-0.5 rounded-full">{activeFilterCount}</span>
                 )}

@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual';
-import React, { useRef, useState, useEffect, useLayoutEffect } from 'react';
+import { useRef, useState, useEffect, useLayoutEffect } from 'react';
 import { ModCard } from './ModCard';
 import { ModListItem } from './ModListItem';
 import type { Package } from '../types/thunderstore';
