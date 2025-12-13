@@ -74,6 +74,7 @@ function App() {
   const [showUpdateModal, setShowUpdateModal] = useState(false)
   const [showPreferences, setShowPreferences] = useState(false)
   const [legacyInstallMode, setLegacyInstallMode] = useState(false)
+  const [isBrowsingMode, setIsBrowsingMode] = useState(false)
 
   const {
     profiles,
@@ -504,6 +505,7 @@ function App() {
 
   // Select profile - NO auto-sync, user must click "Apply to Game" to sync
   const handleSelectProfile = (profileId: string) => {
+    setIsBrowsingMode(false);
     selectProfile(profileId);
   };
 
@@ -979,7 +981,7 @@ function App() {
         </div>
       </div>
     );
-  } else if (!activeProfileId) {
+  } else if (!activeProfileId && !isBrowsingMode) {
     // STEP 2: PROFILE SELECTION
     content = (
       <div className="flex flex-col h-full bg-gray-900 overflow-y-auto">
@@ -1003,6 +1005,7 @@ function App() {
           onCreateProfile={(name) => createProfile(name, selectedCommunity)}
           onImportProfile={handleImportProfile}
           onImportFile={handleImportFile}
+          onBrowseMods={() => setIsBrowsingMode(true)}
           onDeleteProfile={deleteProfile}
           onUpdateProfile={updateProfile}
         />
@@ -1207,7 +1210,17 @@ function App() {
     const main = (
       <div className="flex-1 flex flex-col min-w-0 bg-gray-900 h-full">
         <div className="p-5 border-b border-gray-800 flex items-center justify-between gap-4 flex-shrink-0">
-          <h1 className="text-2xl font-bold text-white">Browse Mods</h1>
+          <div className="flex items-center gap-4">
+            {isBrowsingMode && (
+              <button
+                onClick={() => setIsBrowsingMode(false)}
+                className="text-gray-400 hover:text-white flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-gray-800 transition-colors border border-gray-700 hover:border-gray-600"
+              >
+                ← Exit
+              </button>
+            )}
+            <h1 className="text-2xl font-bold text-white">Browse Mods</h1>
+          </div>
           <div className="flex items-center gap-3">
             <div className="relative flex bg-gray-800 rounded-lg p-1 border border-gray-700 overflow-hidden">
               {/* Sliding Background */}
@@ -1270,16 +1283,17 @@ function App() {
             isLoadingMore={loadingMods}
             hasMore={hasMore}
             viewMode={viewMode}
+            isBrowsing={isBrowsingMode}
           />
         </div>
       </div>
     );
 
     content = <Layout
-      sidebar={sidebar}
+      sidebar={isBrowsingMode ? null : sidebar}
       main={main}
-      isSidebarOpen={isSidebarOpen}
-      onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+      isSidebarOpen={isBrowsingMode ? false : isSidebarOpen}
+      onToggleSidebar={() => !isBrowsingMode && setIsSidebarOpen(!isSidebarOpen)}
     />;
   }
 
@@ -1302,6 +1316,8 @@ function App() {
           onInstall={() => {
             if (activeProfileId) {
               handleInstallMod(selectedMod, activeProfileId);
+            } else {
+              alert('Please select or create a profile to install mods.');
             }
           }}
           onUpdate={() => {
@@ -1312,7 +1328,6 @@ function App() {
           onUninstall={async () => {
             if (!activeProfileId || !selectedMod) return;
             await handleUninstallWithDependencies(selectedMod, activeProfileId);
-            setSelectedMod(null); // Close modal after uninstall
           }}
           isInstalled={
             activeProfileId
@@ -1329,6 +1344,7 @@ function App() {
               })()
               : false
           }
+          isBrowsing={isBrowsingMode}
         />
       )}
 
