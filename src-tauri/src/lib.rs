@@ -2561,6 +2561,7 @@ fn compare_versions(remote: &str, local: &str) -> bool {
 
 #[command]
 async fn install_update(app: AppHandle, download_url: String) -> Result<(), String> {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
 
@@ -2697,8 +2698,14 @@ rm -rf "$UPDATE_DIR"
         unmount_command
     );
 
-    fs::write(&script_path, script).map_err(|e| e.to_string())?;
+	#[cfg(unix)]
+	{
+		fs::set_permissions(
+			&script_path,
+			fs::Permissions::from_mode(0o755)
+		).map_err(|e| e.to_string())?;
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+	}
 
     // 3. Launch Script detached
     eprintln!("[install_update] Launching update script...");
